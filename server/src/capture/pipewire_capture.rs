@@ -163,12 +163,17 @@ fn pipewire_capture_loop(
                     }
 
                     let data = &mut datas[0];
-                    let chunk = data.chunk();
 
-                    if chunk.size() == 0 {
-                        trace!("Zero-size chunk");
-                        return;
-                    }
+                    // Extract chunk metadata in a scope so the immutable borrow
+                    // on `data` (via `.chunk()`) is released before `.data()`.
+                    let (chunk_size, stride) = {
+                        let chunk = data.chunk();
+                        if chunk.size() == 0 {
+                            trace!("Zero-size chunk");
+                            return;
+                        }
+                        (chunk.size() as usize, chunk.stride() as u32)
+                    };
 
                     // Get the raw data pointer (SHM/MemPtr buffers)
                     let raw_data = match data.data() {
@@ -180,9 +185,6 @@ fn pipewire_capture_loop(
                             return;
                         }
                     };
-
-                    let chunk_size = chunk.size() as usize;
-                    let stride = chunk.stride() as u32;
 
                     // Determine dimensions from stride and data size.
                     // Assuming 4 bytes per pixel (BGRx/BGRA).

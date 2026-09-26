@@ -21,7 +21,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use portal::screencast::{CursorMode, ScreenCastPortal, SourceType};
-use capture::pipewire_capture::{CaptureConfig, CaptureStats, CapturedFrame, FrameFormat, run_pipewire_capture};
+use capture::pipewire_capture::{CaptureStats, CapturedFrame, FrameFormat, run_pipewire_capture};
 
 #[tokio::main]
 async fn main() -> Result<()> {

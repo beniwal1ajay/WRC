@@ -4,7 +4,7 @@
 //! Supports combined RemoteDesktop + ScreenCast sessions.
 
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
+use std::os::fd::{FromRawFd, OwnedFd};
 
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info};
@@ -28,7 +28,7 @@ pub enum ButtonState {
 /// Helper to create a portal proxy.
 async fn portal_proxy<'a>(
     connection: &'a Connection,
-    interface: &str,
+    interface: &'a str,
 ) -> Result<zbus::Proxy<'a>> {
     zbus::Proxy::new(
         connection,
@@ -217,18 +217,29 @@ impl RemoteDesktopPortal {
     }
 
     /// Open PipeWire remote fd.
+    ///
+    /// OpenPipeWireRemote returns a unix fd via SCM_RIGHTS. We must use
+    /// call_method and extract the fd from the reply message's fd list.
     pub async fn open_pipewire_remote(&self) -> Result<OwnedFd> {
         let session = self.session_handle.as_ref().context("No session")?;
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.ScreenCast").await?;
         let options: HashMap<&str, Value<'_>> = HashMap::new();
 
-        let fd: OwnedFd = proxy
-            .call("OpenPipeWireRemote", &(session, options))
+        let reply = proxy
+            .call_method("OpenPipeWireRemote", &(session, options))
             .await
-            .context("OpenPipeWireRemote failed")?;
+            .context("OpenPipeWireRemote D-Bus call failed")?;
 
-        info!("PipeWire remote fd obtained for RemoteDesktop session");
-        Ok(fd)
+        let body = reply.body();
+        let fd: zbus::zvariant::Fd<'_> = body.deserialize()
+            .context("Failed to deserialize PipeWire fd from reply")?;
+
+        use std::os::fd::AsRawFd;
+        let raw_fd = fd.as_raw_fd();
+        let owned = unsafe { OwnedFd::from_raw_fd(libc::dup(raw_fd)) };
+
+        info!("PipeWire remote fd obtained for RemoteDesktop session (raw={})", raw_fd);
+        Ok(owned)
     }
 
     // ─── Input injection methods ──────────────────────────────────────

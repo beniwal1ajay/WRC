@@ -33,6 +33,9 @@ image = "0.25"
 # Async stream utilities (for D-Bus signal handling)
 futures-util = "0.3"
 
+# libc for low-level fd operations (dup)
+libc = "0.2"
+
 [dev-dependencies]
 tokio-test = "0.4"
 

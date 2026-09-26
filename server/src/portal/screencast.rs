@@ -4,7 +4,7 @@
 //! to capture the Wayland desktop via PipeWire.
 
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
+use std::os::fd::{FromRawFd, OwnedFd};
 
 use anyhow::{Context, Result, bail};
 use tracing::{debug, info, warn};
@@ -46,7 +46,7 @@ pub struct CaptureStream {
 /// Helper to create a portal proxy for the given interface.
 async fn portal_proxy<'a>(
     connection: &'a Connection,
-    interface: &str,
+    interface: &'a str,
 ) -> Result<zbus::Proxy<'a>> {
     zbus::Proxy::new(
         connection,
@@ -221,6 +221,10 @@ impl ScreenCastPortal {
     }
 
     /// Step 4: Open a PipeWire remote fd for accessing the stream.
+    ///
+    /// OpenPipeWireRemote returns a unix fd, which in D-Bus is sent as a file
+    /// descriptor via SCM_RIGHTS. We must use call_method and extract the fd
+    /// from the reply message's fd list.
     pub async fn open_pipewire_remote(&self) -> Result<OwnedFd> {
         let session = self.session_handle.as_ref()
             .context("No session")?;
@@ -228,13 +232,26 @@ impl ScreenCastPortal {
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.ScreenCast").await?;
         let options: HashMap<&str, Value<'_>> = HashMap::new();
 
-        let fd: OwnedFd = proxy
-            .call("OpenPipeWireRemote", &(session, options))
+        // Use call_method to get the raw Message, then extract the fd
+        let reply = proxy
+            .call_method("OpenPipeWireRemote", &(session, options))
             .await
             .context("OpenPipeWireRemote D-Bus call failed")?;
 
-        info!("PipeWire remote fd obtained");
-        Ok(fd)
+        // The fd is passed out-of-band via SCM_RIGHTS. The body contains an
+        // index into the fd array. Extract it via zvariant::Fd deserialization.
+        let body = reply.body();
+        let fd: zbus::zvariant::Fd<'_> = body.deserialize()
+            .context("Failed to deserialize PipeWire fd from reply")?;
+
+        // Convert the zvariant::Fd into a std::os::fd::OwnedFd
+        use std::os::fd::AsRawFd;
+        let raw_fd = fd.as_raw_fd();
+        // We need to dup the fd since zvariant::Fd borrows it from the message
+        let owned = unsafe { OwnedFd::from_raw_fd(libc::dup(raw_fd)) };
+
+        info!("PipeWire remote fd obtained (raw={})", raw_fd);
+        Ok(owned)
     }
 
     pub fn streams(&self) -> &[CaptureStream] {
@@ -274,7 +291,6 @@ pub fn parse_streams(
         .get("streams")
         .context("No 'streams' in Start response")?;
 
-    // streams is a(ua{sv}) — array of (uint32, dict)
     let streams_array: Vec<(u32, HashMap<String, OwnedValue>)> = streams_value
         .try_clone()
         .context("Failed to clone streams value")?
