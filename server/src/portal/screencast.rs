@@ -13,7 +13,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 use super::session::{
     PortalResponse, generate_request_token, generate_session_token,
-    request_path, wait_for_response,
+    request_path, subscribe_portal_response,
 };
 
 /// Source types for screen capture.
@@ -102,6 +102,9 @@ impl ScreenCastPortal {
 
         debug!("Creating ScreenCast session (token={}, session_token={})", token, session_token);
 
+        // Subscribe to the Response signal BEFORE making the call
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.ScreenCast").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -113,7 +116,7 @@ impl ScreenCastPortal {
             .await
             .context("CreateSession D-Bus call failed")?;
 
-        let (response, results) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, results) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => {
@@ -153,6 +156,8 @@ impl ScreenCastPortal {
             .to_string();
         let expected_path = request_path(&sender, &token);
 
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.ScreenCast").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -167,7 +172,7 @@ impl ScreenCastPortal {
             .await
             .context("SelectSources D-Bus call failed")?;
 
-        let (response, _results) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, _results) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => {
@@ -190,6 +195,8 @@ impl ScreenCastPortal {
             .to_string();
         let expected_path = request_path(&sender, &token);
 
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.ScreenCast").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -200,7 +207,7 @@ impl ScreenCastPortal {
             .await
             .context("Start D-Bus call failed")?;
 
-        let (response, results) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, results) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => {

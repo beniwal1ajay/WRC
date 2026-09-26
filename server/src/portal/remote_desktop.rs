@@ -14,7 +14,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use super::screencast::{CaptureStream, CursorMode, SourceType, parse_streams};
 use super::session::{
     PortalResponse, generate_request_token, generate_session_token,
-    request_path, wait_for_response,
+    request_path, subscribe_portal_response,
 };
 
 /// Button state for mouse/keyboard events.
@@ -86,6 +86,8 @@ impl RemoteDesktopPortal {
             .to_string();
         let expected_path = request_path(&sender, &token);
 
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.RemoteDesktop").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -97,7 +99,7 @@ impl RemoteDesktopPortal {
             .await
             .context("CreateSession D-Bus call failed")?;
 
-        let (response, results) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, results) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => {
@@ -124,6 +126,8 @@ impl RemoteDesktopPortal {
         let sender = self.connection.unique_name().context("No unique bus name")?.to_string();
         let expected_path = request_path(&sender, &token);
 
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.RemoteDesktop").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -135,7 +139,7 @@ impl RemoteDesktopPortal {
             .await
             .context("SelectDevices failed")?;
 
-        let (response, _) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, _) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => { info!("Devices selected"); Ok(()) }
@@ -156,6 +160,8 @@ impl RemoteDesktopPortal {
         let sender = self.connection.unique_name().context("No unique bus name")?.to_string();
         let expected_path = request_path(&sender, &token);
 
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.ScreenCast").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -170,7 +176,7 @@ impl RemoteDesktopPortal {
             .await
             .context("SelectSources failed")?;
 
-        let (response, _) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, _) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => { info!("Sources selected on RemoteDesktop session"); Ok(()) }
@@ -187,6 +193,8 @@ impl RemoteDesktopPortal {
         let sender = self.connection.unique_name().context("No unique bus name")?.to_string();
         let expected_path = request_path(&sender, &token);
 
+        let listener = subscribe_portal_response(&self.connection, &expected_path).await?;
+
         let proxy = portal_proxy(&self.connection, "org.freedesktop.portal.RemoteDesktop").await?;
 
         let mut options: HashMap<&str, Value<'_>> = HashMap::new();
@@ -197,7 +205,7 @@ impl RemoteDesktopPortal {
             .await
             .context("Start failed")?;
 
-        let (response, results) = wait_for_response(&self.connection, &expected_path).await?;
+        let (response, results) = listener.wait().await?;
 
         match response {
             PortalResponse::Success => {
