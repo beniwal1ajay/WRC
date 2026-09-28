@@ -119,7 +119,7 @@ pub async fn handle_client_session(
     info!("Video stream configured: {}x{} @ 60fps (H.264)", encoder.width(), encoder.height());
 
     // Channel for client input events -> input dispatcher
-    let (input_tx, mut input_rx) = mpsc::channel::<Message>(32);
+    let (input_tx, mut input_rx) = mpsc::channel::<Message>(512);
     let keyframe_requested = Arc::new(AtomicBool::new(true)); // force keyframe on start
     let kf_req_clone = keyframe_requested.clone();
     let running_reader = running.clone();
@@ -155,6 +155,8 @@ pub async fn handle_client_session(
     let portal_clone = portal.clone();
     let running_input = running.clone();
     let input_dispatcher = tokio::spawn(async move {
+        let mut pressed_keys: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
         while running_input.load(Ordering::Relaxed) {
             match input_rx.recv().await {
                 Some(msg) => {
@@ -179,6 +181,7 @@ pub async fn handle_client_session(
                                 let _ = p.notify_pointer_axis_discrete(0, steps).await;
                             }
                             Message::KeyDown { keycode } => {
+                                pressed_keys.insert(keycode);
                                 if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
                                     let keysym = (keycode & 0x7FFF_FFFF) as i32;
                                     let _ = p.notify_keyboard_keysym(keysym, ButtonState::Pressed).await;
@@ -187,6 +190,7 @@ pub async fn handle_client_session(
                                 }
                             }
                             Message::KeyUp { keycode } => {
+                                pressed_keys.remove(&keycode);
                                 if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
                                     let keysym = (keycode & 0x7FFF_FFFF) as i32;
                                     let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
@@ -199,6 +203,19 @@ pub async fn handle_client_session(
                     }
                 }
                 None => break,
+            }
+        }
+
+        // Safety cleanup: release any keys still marked as pressed
+        if let Some(ref p_lock) = portal_clone {
+            let p = p_lock.lock().await;
+            for keycode in pressed_keys {
+                if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
+                    let keysym = (keycode & 0x7FFF_FFFF) as i32;
+                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
+                } else {
+                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
+                }
             }
         }
     });

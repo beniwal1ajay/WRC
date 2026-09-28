@@ -1,31 +1,34 @@
 package com.example.ward.ui.stream
 
+import android.content.Context
+import android.text.InputType
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
+import android.view.inputmethod.BaseInputConnection
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,6 +36,7 @@ import com.example.ward.decoder.VideoDecoder
 import com.example.ward.network.ConnectionState
 import com.example.ward.network.WardClient
 import com.example.ward.protocol.WardMessage
+import kotlinx.coroutines.delay
 
 // Linux X11/XKB keysyms
 private const val KEYSYM_FLAG = 0x80000000.toInt()
@@ -56,6 +60,78 @@ private const val EVDEV_KEY_C = 46
 private const val EVDEV_KEY_V = 47
 private const val EVDEV_KEY_Z = 44
 
+/**
+ * Invisible native Android View providing direct IME InputConnection without
+ * accumulating or desynchronizing Compose string buffers. Prevents sticky repeat keys.
+ */
+class RemoteInputView(
+    context: Context,
+    private val onChar: (Char) -> Unit,
+    private val onBackspace: () -> Unit
+) : View(context) {
+
+    init {
+        isFocusable = true
+        isFocusableInTouchMode = true
+    }
+
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_FULLSCREEN
+
+        return object : BaseInputConnection(this, false) {
+            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                if (text != null) {
+                    for (ch in text) {
+                        onChar(ch)
+                    }
+                }
+                return true
+            }
+
+            override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                repeat(beforeLength) {
+                    onBackspace()
+                }
+                return true
+            }
+
+            override fun sendKeyEvent(event: KeyEvent?): Boolean {
+                if (event == null) return false
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    when (event.keyCode) {
+                        KeyEvent.KEYCODE_DEL -> {
+                            onBackspace()
+                            return true
+                        }
+                        KeyEvent.KEYCODE_ENTER -> {
+                            onChar('\n')
+                            return true
+                        }
+                        else -> {
+                            val unicode = event.unicodeChar
+                            if (unicode != 0) {
+                                onChar(unicode.toChar())
+                                return true
+                            }
+                        }
+                    }
+                } else if (event.action == KeyEvent.ACTION_UP) {
+                    when (event.keyCode) {
+                        KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_ENTER -> return true
+                        else -> {
+                            if (event.unicodeChar != 0) return true
+                        }
+                    }
+                }
+                return super.sendKeyEvent(event)
+            }
+        }
+    }
+}
+
 @Composable
 fun WardRemoteApp() {
     var host by remember { mutableStateOf("10.31.1.234") }
@@ -64,21 +140,19 @@ fun WardRemoteApp() {
     var fps by remember { mutableIntStateOf(0) }
     var streamWidth by remember { mutableIntStateOf(1920) }
     var streamHeight by remember { mutableIntStateOf(1080) }
-    var showControls by remember { mutableStateOf(true) }
     var showShortcuts by remember { mutableStateOf(false) }
 
-    // Direct real-time typing state
-    var imeBuffer by remember { mutableStateOf(TextFieldValue("")) }
-    val focusRequester = remember { FocusRequester() }
-    val keyboardController = LocalSoftwareKeyboardController.current
+    // Auto-contracting bar state & interaction timer
+    var isBarCollapsed by remember { mutableStateOf(false) }
+    var lastBarInteraction by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
+    var remoteInputView: RemoteInputView? by remember { mutableStateOf(null) }
     var videoDecoder: VideoDecoder? by remember { mutableStateOf(null) }
     var wardClient: WardClient? by remember { mutableStateOf(null) }
 
     fun sendKeysym(keysym: Int) {
         val code = keysym or KEYSYM_FLAG
-        wardClient?.sendInput(WardMessage.KeyDown(code))
-        wardClient?.sendInput(WardMessage.KeyUp(code))
+        wardClient?.sendKeyPress(code)
     }
 
     fun sendCtrlKey(evdevKey: Int) {
@@ -88,6 +162,22 @@ fun WardRemoteApp() {
         wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
     }
 
+    fun showKeyboard() {
+        remoteInputView?.let { view ->
+            view.requestFocus()
+            val imm = view.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    // Auto-contract bar after 4 seconds of inactivity
+    LaunchedEffect(isBarCollapsed, lastBarInteraction) {
+        if (!isBarCollapsed) {
+            delay(4000)
+            isBarCollapsed = true
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             wardClient?.disconnect()
@@ -95,15 +185,19 @@ fun WardRemoteApp() {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        val screenWidth = maxWidth
+        val screenHeight = maxHeight
+        val isLandscape = screenWidth > screenHeight
+
         when (val state = connectionState) {
             is ConnectionState.Connected -> {
                 // 1. Aspect-ratio preserved video surface
-                BoxWithConstraints(
+                Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    val containerAspect = maxWidth / maxHeight
+                    val containerAspect = screenWidth / screenHeight
                     val videoAspect = if (streamWidth > 0 && streamHeight > 0) {
                         streamWidth.toFloat() / streamHeight.toFloat()
                     } else {
@@ -280,149 +374,359 @@ fun WardRemoteApp() {
                     }
                 )
 
-                // 3. Invisible Real-Time Input Connection: Types directly to PC
-                BasicTextField(
-                    value = imeBuffer,
-                    onValueChange = { newText ->
-                        val oldStr = imeBuffer.text
-                        val newStr = newText.text
-
-                        if (newStr.length > oldStr.length) {
-                            // Characters typed directly -> send to PC instantly!
-                            val addedChars = newStr.substring(oldStr.length)
-                            for (ch in addedChars) {
+                // 3. Invisible Native Android View: Types directly to PC without buffer desync
+                AndroidView(
+                    modifier = Modifier
+                        .size(1.dp)
+                        .alpha(0.001f),
+                    factory = { ctx ->
+                        RemoteInputView(
+                            context = ctx,
+                            onChar = { ch ->
                                 if (ch == '\n') {
                                     sendKeysym(KEYSYM_RETURN)
                                 } else {
                                     sendKeysym(ch.code)
                                 }
-                            }
-                        } else if (newStr.length < oldStr.length) {
-                            // Backspace tapped on phone keyboard -> send Backspace to PC!
-                            val deletedCount = oldStr.length - newStr.length
-                            repeat(deletedCount) {
+                            },
+                            onBackspace = {
                                 sendKeysym(KEYSYM_BACKSPACE)
                             }
-                        }
-
-                        // Maintain a safe buffer size so text input never fills up memory
-                        imeBuffer = if (newStr.length > 50) {
-                            TextFieldValue("")
-                        } else {
-                            newText
-                        }
-                    },
-                    modifier = Modifier
-                        .size(1.dp)
-                        .alpha(0.001f)
-                        .focusRequester(focusRequester),
-                    keyboardOptions = KeyboardOptions(
-                        autoCorrectEnabled = false,
-                        keyboardType = KeyboardType.Text,
-                        imeAction = ImeAction.Default
-                    )
+                        ).also { remoteInputView = it }
+                    }
                 )
 
-                // 4. Top Floating Bar (Stats, Keyboard Toggle, Shortcuts Toggle, Refresh, Exit)
-                AnimatedVisibility(
-                    visible = showControls,
-                    enter = fadeIn(),
-                    exit = fadeOut(),
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 12.dp, end = 12.dp)
-                ) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xEE1E232E)),
-                        shape = RoundedCornerShape(16.dp),
-                        elevation = CardDefaults.cardElevation(8.dp)
+                // 4. Controls: Shifted to Left in Landscape, Centered at Top in Portrait
+                if (isLandscape) {
+                    // -------------------------------------------------------------
+                    // LANDSCAPE MODE: Shift control bar to LEFT, Scroll buttons on RIGHT
+                    // -------------------------------------------------------------
+
+                    // Left Vertical Bar (Expanded)
+                    AnimatedVisibility(
+                        visible = !isBarCollapsed,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xF0141824)),
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, Color(0x33FFFFFF)),
+                            elevation = CardDefaults.cardElevation(8.dp)
                         ) {
-                            Text(
-                                text = "${streamWidth}x${streamHeight}",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "$fps FPS",
-                                color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            // Direct Phone Keyboard Trigger
-                            Button(
-                                onClick = {
-                                    focusRequester.requestFocus()
-                                    keyboardController?.show()
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF0284C7),
-                                    contentColor = Color.White
-                                ),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                shape = RoundedCornerShape(8.dp)
+                            Column(
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                // Collapse toggle button
+                                Button(
+                                    onClick = { isBarCollapsed = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(26.dp),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text("◀", fontSize = 11.sp, color = Color.White)
+                                }
+
+                                // Stats: FPS and Resolution
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = "$fps FPS",
+                                        color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "${streamWidth}x${streamHeight}",
+                                        color = Color(0xFF94A3B8),
+                                        fontSize = 9.sp
+                                    )
+                                }
+
+                                HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp, modifier = Modifier.width(36.dp))
+
+                                // Direct Keyboard Trigger
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showKeyboard()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("⌨", fontSize = 15.sp, color = Color.White)
+                                }
+
+                                // Shortcuts Toggle
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showShortcuts = !showShortcuts
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("⚡", fontSize = 14.sp, color = Color.White)
+                                }
+
+                                // Refresh Keyframe
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        wardClient?.requestKeyframe()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("↻", fontSize = 15.sp, color = Color.White)
+                                }
+
+                                // Disconnect / Exit
+                                Button(
+                                    onClick = {
+                                        wardClient?.disconnect()
+                                        videoDecoder?.stop()
+                                        connectionState = ConnectionState.Disconnected
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("✕", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
                             }
+                        }
+                    }
 
-                            // Quick Shortcuts Bar Toggle
-                            Button(
-                                onClick = { showShortcuts = !showShortcuts },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
-                                    contentColor = Color.White
-                                ),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                shape = RoundedCornerShape(8.dp)
+                    // Left Vertical Bar (Collapsed Pill handle)
+                    AnimatedVisibility(
+                        visible = isBarCollapsed,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier.align(Alignment.CenterStart).padding(start = 4.dp)
+                    ) {
+                        Card(
+                            onClick = {
+                                isBarCollapsed = false
+                                lastBarInteraction = System.currentTimeMillis()
+                            },
+                            colors = CardDefaults.cardColors(containerColor = Color(0xCC141824)),
+                            shape = RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp),
+                            border = BorderStroke(1.dp, Color(0x33FFFFFF))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text("Shortcuts", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White)
+                                Text("▶", fontSize = 12.sp, color = Color.White)
+                                Text(
+                                    text = "$fps",
+                                    color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
+                        }
+                    }
 
-                            Button(
-                                onClick = { wardClient?.requestKeyframe() },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF475569),
-                                    contentColor = Color.White
-                                ),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                shape = RoundedCornerShape(8.dp)
+                    // Right Edge Scroll Up / Down Buttons (only denoted by signs ▲ and ▼)
+                    Column(
+                        modifier = Modifier.align(Alignment.CenterEnd).padding(end = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // Scroll Up button
+                        Button(
+                            onClick = { wardClient?.sendInput(WardMessage.MouseScroll(0f, -1.0f)) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC141824), contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.size(48.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            elevation = ButtonDefaults.buttonElevation(6.dp)
+                        ) {
+                            Text("▲", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+
+                        // Scroll Down button
+                        Button(
+                            onClick = { wardClient?.sendInput(WardMessage.MouseScroll(0f, 1.0f)) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC141824), contentColor = Color.White),
+                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.size(48.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            elevation = ButtonDefaults.buttonElevation(6.dp)
+                        ) {
+                            Text("▼", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+
+                } else {
+                    // -------------------------------------------------------------
+                    // PORTRAIT MODE: Leave horizontal top bar as it is
+                    // -------------------------------------------------------------
+
+                    // Top Floating Bar (Expanded)
+                    AnimatedVisibility(
+                        visible = !isBarCollapsed,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 12.dp, end = 12.dp)
+                    ) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xEE1E232E)),
+                            shape = RoundedCornerShape(16.dp),
+                            elevation = CardDefaults.cardElevation(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Refresh", fontSize = 11.sp, color = Color.White)
+                                Text(
+                                    text = "${streamWidth}x${streamHeight}",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "$fps FPS",
+                                    color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                // Direct Phone Keyboard Trigger
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showKeyboard()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+
+                                // Quick Shortcuts Bar Toggle
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showShortcuts = !showShortcuts
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Shortcuts", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        wardClient?.requestKeyframe()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Refresh", fontSize = 11.sp, color = Color.White)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        wardClient?.disconnect()
+                                        videoDecoder?.stop()
+                                        connectionState = ConnectionState.Disconnected
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Exit", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+
+                                // Manual collapse button in portrait
+                                Button(
+                                    onClick = { isBarCollapsed = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B), contentColor = Color.White),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(28.dp),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text("▲", fontSize = 10.sp, color = Color.White)
+                                }
                             }
+                        }
+                    }
 
-                            Button(
-                                onClick = {
-                                    wardClient?.disconnect()
-                                    videoDecoder?.stop()
-                                    connectionState = ConnectionState.Disconnected
-                                },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFFDC2626),
-                                    contentColor = Color.White
-                                ),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(32.dp),
-                                shape = RoundedCornerShape(8.dp)
+                    // Top Floating Bar (Collapsed Pill in Portrait)
+                    AnimatedVisibility(
+                        visible = isBarCollapsed,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp)
+                    ) {
+                        Card(
+                            onClick = {
+                                isBarCollapsed = false
+                                lastBarInteraction = System.currentTimeMillis()
+                            },
+                            colors = CardDefaults.cardColors(containerColor = Color(0xCC1E232E)),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0x33FFFFFF))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Exit", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                Text(text = "${streamWidth}x${streamHeight}", color = Color.White, fontSize = 11.sp)
+                                Text(
+                                    text = "$fps FPS",
+                                    color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text("▼", color = Color.White, fontSize = 10.sp)
                             }
                         }
                     }
                 }
 
-                // 5. Bottom Shortcut & Scroll Toolbar (High contrast white text on dark theme buttons)
+                // 5. Shortcut & Navigation Toolbar
                 AnimatedVisibility(
                     visible = showShortcuts,
                     enter = fadeIn(),
                     exit = fadeOut(),
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp, start = 8.dp, end = 8.dp)
+                    modifier = if (isLandscape) {
+                        Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp, start = 64.dp, end = 72.dp)
+                    } else {
+                        Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp, start = 8.dp, end = 8.dp)
+                    }
                 ) {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color(0xF2141822)),

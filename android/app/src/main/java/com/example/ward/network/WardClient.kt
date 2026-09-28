@@ -34,6 +34,8 @@ class WardClient(
     private val isRunning = AtomicBoolean(false)
     private val sequence = AtomicInteger(1)
     private val sendLock = Any()
+    private val inputQueue = java.util.concurrent.LinkedBlockingQueue<WardMessage>()
+    private var senderThread: Thread? = null
 
     fun connect(host: String, port: Int) {
         if (isRunning.get()) return
@@ -70,6 +72,28 @@ class WardClient(
                     outputStream = outStream
                 }
                 isRunning.set(true)
+                inputQueue.clear()
+
+                // Dedicated sequential FIFO input sender thread
+                senderThread = Thread({
+                    Log.i(TAG, "Input sender thread started")
+                    while (isRunning.get()) {
+                        try {
+                            val msg = inputQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                            synchronized(sendLock) {
+                                outputStream?.let { out ->
+                                    val seq = sequence.getAndIncrement()
+                                    writeMessage(out, msg, seq)
+                                }
+                            }
+                        } catch (e: InterruptedException) {
+                            break
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Input sender write error: ${e.message}")
+                        }
+                    }
+                    Log.i(TAG, "Input sender thread stopped")
+                }, "Ward-InputSender").apply { start() }
 
                 // 1. Send CONNECTION_INIT
                 val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
@@ -144,18 +168,13 @@ class WardClient(
 
     fun sendInput(msg: WardMessage) {
         if (!isRunning.get()) return
-        Thread {
-            try {
-                synchronized(sendLock) {
-                    outputStream?.let { out ->
-                        val seq = sequence.getAndIncrement()
-                        writeMessage(out, msg, seq)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to send input message: ${e.message}")
-            }
-        }.start()
+        inputQueue.offer(msg)
+    }
+
+    fun sendKeyPress(keycode: Int) {
+        if (!isRunning.get()) return
+        inputQueue.offer(WardMessage.KeyDown(keycode))
+        inputQueue.offer(WardMessage.KeyUp(keycode))
     }
 
     fun requestKeyframe() {
@@ -164,6 +183,10 @@ class WardClient(
 
     fun disconnect() {
         if (!isRunning.getAndSet(false)) return
+
+        senderThread?.interrupt()
+        senderThread = null
+        inputQueue.clear()
 
         try {
             synchronized(sendLock) {
