@@ -331,7 +331,7 @@ fun WardRemoteApp() {
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 12.dp, end = 12.dp)
                 ) {
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xDD1E1E1E)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xEE1E232E)),
                         shape = RoundedCornerShape(16.dp),
                         elevation = CardDefaults.cardElevation(8.dp)
                     ) {
@@ -342,13 +342,13 @@ fun WardRemoteApp() {
                         ) {
                             Text(
                                 text = "${streamWidth}x${streamHeight}",
-                                color = Color(0xFF90CAF9),
+                                color = Color.White,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = "$fps FPS",
-                                color = if (fps >= 25) Color(0xFF81C784) else Color(0xFFFFB74D),
+                                color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -359,32 +359,42 @@ fun WardRemoteApp() {
                                     focusRequester.requestFocus()
                                     keyboardController?.show()
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1)),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF0284C7),
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
 
                             // Quick Shortcuts Bar Toggle
                             Button(
                                 onClick = { showShortcuts = !showShortcuts },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (showShortcuts) Color(0xFF00796B) else Color(0xFF37474F)
+                                    containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
+                                    contentColor = Color.White
                                 ),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Shortcuts", fontSize = 11.sp)
+                                Text("Shortcuts", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White)
                             }
 
                             Button(
                                 onClick = { wardClient?.requestKeyframe() },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF37474F)),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF475569),
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Refresh", fontSize = 11.sp)
+                                Text("Refresh", fontSize = 11.sp, color = Color.White)
                             }
 
                             Button(
@@ -393,17 +403,21 @@ fun WardRemoteApp() {
                                     videoDecoder?.stop()
                                     connectionState = ConnectionState.Disconnected
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFDC2626),
+                                    contentColor = Color.White
+                                ),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Exit", fontSize = 11.sp)
+                                Text("Exit", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
                         }
                     }
                 }
 
-                // 5. Bottom Shortcut & Scroll Toolbar (Sticky overlay with Scroll Up/Down, Page Up/Down, etc.)
+                // 5. Bottom Shortcut & Scroll Toolbar (High contrast white text on dark theme buttons)
                 AnimatedVisibility(
                     visible = showShortcuts,
                     enter = fadeIn(),
@@ -411,7 +425,7 @@ fun WardRemoteApp() {
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp, start = 8.dp, end = 8.dp)
                 ) {
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xEE1A1A1A)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xF2141822)),
                         shape = RoundedCornerShape(16.dp),
                         elevation = CardDefaults.cardElevation(10.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -422,31 +436,35 @@ fun WardRemoteApp() {
                                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                val navButton = @Composable { label: String, color: Color, onClick: () -> Unit ->
+                                val navButton = @Composable { label: String, bgColor: Color, onClick: () -> Unit ->
                                     Button(
                                         onClick = onClick,
-                                        colors = ButtonDefaults.buttonColors(containerColor = color),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = bgColor,
+                                            contentColor = Color.White
+                                        ),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        modifier = Modifier.height(32.dp)
+                                        modifier = Modifier.height(34.dp),
+                                        shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                     }
                                 }
 
                                 // Dedicated Scroll Up / Down ticks
-                                navButton("▲ Scroll Up", Color(0xFF00695C)) {
+                                navButton("▲ Scroll Up", Color(0xFF0D9488)) {
                                     wardClient?.sendInput(WardMessage.MouseScroll(0f, -1.0f))
                                 }
-                                navButton("▼ Scroll Down", Color(0xFF00695C)) {
+                                navButton("▼ Scroll Down", Color(0xFF0D9488)) {
                                     wardClient?.sendInput(WardMessage.MouseScroll(0f, 1.0f))
                                 }
-                                navButton("PgUp", Color(0xFF37474F)) { sendKeysym(KEYSYM_PAGE_UP) }
-                                navButton("PgDn", Color(0xFF37474F)) { sendKeysym(KEYSYM_PAGE_DOWN) }
-                                navButton("Super (Win)", Color(0xFFE65100)) { sendKeysym(KEYSYM_SUPER) }
-                                navButton("Esc", Color(0xFF37474F)) { sendKeysym(KEYSYM_ESCAPE) }
-                                navButton("Tab", Color(0xFF37474F)) { sendKeysym(KEYSYM_TAB) }
-                                navButton("Enter", Color(0xFF0277BD)) { sendKeysym(KEYSYM_RETURN) }
-                                navButton("Bksp", Color(0xFFC62828)) { sendKeysym(KEYSYM_BACKSPACE) }
+                                navButton("PgUp", Color(0xFF334155)) { sendKeysym(KEYSYM_PAGE_UP) }
+                                navButton("PgDn", Color(0xFF334155)) { sendKeysym(KEYSYM_PAGE_DOWN) }
+                                navButton("Super (Win)", Color(0xFFEA580C)) { sendKeysym(KEYSYM_SUPER) }
+                                navButton("Esc", Color(0xFF475569)) { sendKeysym(KEYSYM_ESCAPE) }
+                                navButton("Tab", Color(0xFF475569)) { sendKeysym(KEYSYM_TAB) }
+                                navButton("Enter", Color(0xFF2563EB)) { sendKeysym(KEYSYM_RETURN) }
+                                navButton("Bksp", Color(0xFFDC2626)) { sendKeysym(KEYSYM_BACKSPACE) }
                             }
 
                             // Row 2: Clipboard & Arrow navigation
@@ -457,11 +475,15 @@ fun WardRemoteApp() {
                                 val actionButton = @Composable { label: String, onClick: () -> Unit ->
                                     Button(
                                         onClick = onClick,
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF263238)),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFF242A38),
+                                            contentColor = Color.White
+                                        ),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        modifier = Modifier.height(30.dp)
+                                        modifier = Modifier.height(32.dp),
+                                        shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Text(label, fontSize = 11.sp)
+                                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                                     }
                                 }
 
