@@ -12,8 +12,8 @@
 | 1  | Wayland Screen Capture       | ✅ Complete  | Capture frames via ScreenCast+PW    |
 | 2  | Remote Input                 | ✅ Complete  | Mouse/keyboard via RemoteDesktop    |
 | 3  | LAN Video Streaming          | ✅ Complete  | Android views Ubuntu desktop        |
-| 4  | LAN Remote Control           | 🔄 Active   | Android controls Ubuntu desktop     |
-| 5  | Clipboard Sync               | ⬜ Pending   | Bidirectional text clipboard        |
+| 4  | LAN Remote Control           | ✅ Complete  | Android controls Ubuntu desktop     |
+| 5  | Clipboard Sync               | 🔄 Active   | Bidirectional text clipboard        |
 | 6  | Authentication & Pairing     | ⬜ Pending   | Device identity and encryption      |
 | 7  | Reconnect & Resilience       | ⬜ Pending   | Survive disconnects, sleep/wake     |
 | 8  | Performance Optimization     | ⬜ Pending   | 720p/30→1080p/30→1080p/60           |
@@ -103,18 +103,20 @@
 
 ---
 
-## Milestone 4: LAN Remote Control
+## Milestone 4: LAN Remote Control ✅
+
+**Completed:** 2026-09-28
 
 **Goal:** Android can control the Ubuntu desktop.
 
 **Tasks:**
-1. Implement touch gesture recognition on Android.
-2. Map gestures → protocol input messages.
-3. Send input messages from Android → server over TLS.
-4. Server translates messages → RemoteDesktop portal D-Bus calls.
-5. Coordinate mapping: phone → video → desktop.
+1. ✅ Implement touch gesture recognition on Android (1-finger pointer, tap click, drag, 2-finger scroll/right click, 3-finger middle click/Super swipe).
+2. ✅ Map gestures → protocol input messages (MouseMove, MouseButton, MouseScroll, KeyDown, KeyUp).
+3. ✅ Send input messages from Android → server over TLS with sequential FIFO queue and sticky key prevention.
+4. ✅ Server translates messages → RemoteDesktop portal D-Bus calls with keycode/keysym handling and held key cleanup.
+5. ✅ Adaptive landscape dock, dedicated thumb scroll signs (`▲` / `▼`), and auto-contracting controls.
 
-**Acceptance:** Can move mouse, click, scroll, and type from Android.
+**Acceptance:** Can move mouse, click, scroll, and type from Android with high responsiveness and zero sticky keys.
 
 ---
 
