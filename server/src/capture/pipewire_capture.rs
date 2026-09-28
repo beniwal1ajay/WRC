@@ -248,13 +248,68 @@ fn pipewire_capture_loop(
 
     // Connect the stream to the portal's PipeWire node.
     // Direction::Input = we're consuming (receiving) video from the node.
-    // We pass no format params and let PipeWire negotiate automatically.
+    //
+    // We provide explicit format params requesting SHM (MemPtr) video buffers.
+    // Without this, GNOME's ScreenCast delivers DMA-BUF frames which can't be
+    // read via data.data() (returns None). By requesting specific SPA video
+    // formats, PipeWire will negotiate SHM delivery.
+    //
+    // Build a pod requesting Video/Raw in BGRx format (GNOME Wayland default).
+    let format_values: Vec<u32> = vec![
+        spa::param::video::VideoFormat::BGRx as u32,
+        spa::param::video::VideoFormat::BGRA as u32,
+        spa::param::video::VideoFormat::RGBx as u32,
+        spa::param::video::VideoFormat::RGBA as u32,
+    ];
+
+    let mut params_buffer = vec![0u8; 1024];
+    let format_pod = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(&mut params_buffer),
+        &spa::pod::Value::Object(spa::pod::Object {
+            type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+            id: spa::param::ParamType::EnumFormat.as_raw(),
+            properties: vec![
+                spa::pod::Property {
+                    key: spa::format::FormatProperties::MediaType.as_raw(),
+                    flags: spa::pod::PropertyFlags::empty(),
+                    value: spa::pod::Value::Id(
+                        spa::utils::Id(spa::param::video::MediaType::Video as u32),
+                    ),
+                },
+                spa::pod::Property {
+                    key: spa::format::FormatProperties::MediaSubtype.as_raw(),
+                    flags: spa::pod::PropertyFlags::empty(),
+                    value: spa::pod::Value::Id(
+                        spa::utils::Id(spa::param::video::MediaSubtype::Raw as u32),
+                    ),
+                },
+                spa::pod::Property {
+                    key: spa::format::FormatProperties::VideoFormat.as_raw(),
+                    flags: spa::pod::PropertyFlags::empty(),
+                    value: spa::pod::Value::Choice(spa::pod::ChoiceValue::Enum {
+                        default: spa::utils::Id(spa::param::video::VideoFormat::BGRx as u32),
+                        alternatives: format_values.iter()
+                            .map(|&v| spa::utils::Id(v))
+                            .collect(),
+                    }),
+                },
+            ],
+        }),
+    )
+    .context("Failed to serialize SPA format pod")?
+    .0
+    .into_inner();
+
+    // SAFETY: the serialized pod data is valid for the lifetime of params_buffer
+    let pod_ptr = format_pod.as_ptr() as *const spa::pod::Pod;
+    let pod_ref = unsafe { &*pod_ptr };
+
     stream.connect(
         spa::utils::Direction::Input,
         Some(node_id),
         pipewire::stream::StreamFlags::AUTOCONNECT
             | pipewire::stream::StreamFlags::MAP_BUFFERS,
-        &mut [],
+        &mut [pod_ref],
     ).context("Failed to connect PipeWire stream")?;
 
     info!("PipeWire stream connected to node {}, waiting for frames...", node_id);
