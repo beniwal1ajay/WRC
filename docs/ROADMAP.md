@@ -9,8 +9,8 @@
 | #  | Milestone                    | Status       | Target                              |
 |----|------------------------------|--------------|-------------------------------------|
 | 0  | Environment Discovery        | ✅ Complete  | System capabilities documented      |
-| 1  | Wayland Screen Capture       | 🔄 Active   | Capture frames via ScreenCast+PW    |
-| 2  | Remote Input                 | ⬜ Pending   | Mouse/keyboard via RemoteDesktop    |
+| 1  | Wayland Screen Capture       | ✅ Complete  | Capture frames via ScreenCast+PW    |
+| 2  | Remote Input                 | 🔄 Active   | Mouse/keyboard via RemoteDesktop    |
 | 3  | LAN Video Streaming          | ⬜ Pending   | Android views Ubuntu desktop        |
 | 4  | LAN Remote Control           | ⬜ Pending   | Android controls Ubuntu desktop     |
 | 5  | Clipboard Sync               | ⬜ Pending   | Bidirectional text clipboard        |
@@ -42,21 +42,23 @@
 
 ---
 
-## Milestone 1: Wayland Screen Capture
+## Milestone 1: Wayland Screen Capture ✅
+
+**Completed:** 2026-09-28
 
 **Goal:** Prove that a Rust program can capture the Wayland desktop.
 
 **Tasks:**
-1. Install Rust toolchain and dependencies.
-2. Create Rust project with D-Bus and PipeWire bindings.
-3. Connect to ScreenCast portal via D-Bus.
-4. Request monitor capture.
-5. Handle user permission dialog.
-6. Receive PipeWire stream.
-7. Extract frames (DMA-BUF or SHM).
-8. Save captured frames as PNG/PPM to verify correctness.
+1. ✅ Install Rust toolchain and dependencies.
+2. ✅ Create Rust project with D-Bus and PipeWire bindings.
+3. ✅ Connect to ScreenCast portal via D-Bus (`subscribe_portal_response` race-free signals).
+4. ✅ Request monitor capture.
+5. ✅ Handle user permission dialog (persisted across sessions).
+6. ✅ Receive PipeWire stream via remote fd.
+7. ✅ Extract frames (SPA EnumFormat pod negotiates raw BGRx/BGRA SHM buffers).
+8. ✅ Save captured frames as PNG/PPM to verify correctness (1920x1080 RGBA PNGs verified).
 
-**Acceptance:** Captured image matches actual desktop content.
+**Acceptance:** Captured image matches actual desktop content. (Achieved: 10 frames captured, 3 saved).
 
 **Dependencies:** `zbus`, `pipewire-rs`, `libpipewire-0.3-dev`
 
