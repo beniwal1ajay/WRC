@@ -254,45 +254,36 @@ fn pipewire_capture_loop(
     // read via data.data() (returns None). By requesting specific SPA video
     // formats, PipeWire will negotiate SHM delivery.
     //
-    // Build a pod requesting Video/Raw in BGRx format (GNOME Wayland default).
-    let format_values: Vec<u32> = vec![
-        spa::param::video::VideoFormat::BGRx as u32,
-        spa::param::video::VideoFormat::BGRA as u32,
-        spa::param::video::VideoFormat::RGBx as u32,
-        spa::param::video::VideoFormat::RGBA as u32,
-    ];
-
-    let mut params_buffer = vec![0u8; 1024];
-    let format_pod = spa::pod::serialize::PodSerializer::serialize(
-        std::io::Cursor::new(&mut params_buffer),
+    // Build format parameter pod requesting Raw Video (BGRx/BGRA/RGBx/RGBA).
+    let format_pod_bytes: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
         &spa::pod::Value::Object(spa::pod::Object {
             type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
             id: spa::param::ParamType::EnumFormat.as_raw(),
             properties: vec![
-                spa::pod::Property {
-                    key: spa::format::FormatProperties::MediaType.as_raw(),
-                    flags: spa::pod::PropertyFlags::empty(),
-                    value: spa::pod::Value::Id(
-                        spa::utils::Id(spa::param::video::MediaType::Video as u32),
-                    ),
-                },
-                spa::pod::Property {
-                    key: spa::format::FormatProperties::MediaSubtype.as_raw(),
-                    flags: spa::pod::PropertyFlags::empty(),
-                    value: spa::pod::Value::Id(
-                        spa::utils::Id(spa::param::video::MediaSubtype::Raw as u32),
-                    ),
-                },
-                spa::pod::Property {
-                    key: spa::format::FormatProperties::VideoFormat.as_raw(),
-                    flags: spa::pod::PropertyFlags::empty(),
-                    value: spa::pod::Value::Choice(spa::pod::ChoiceValue::Enum {
-                        default: spa::utils::Id(spa::param::video::VideoFormat::BGRx as u32),
-                        alternatives: format_values.iter()
-                            .map(|&v| spa::utils::Id(v))
-                            .collect(),
-                    }),
-                },
+                spa::pod::Property::new(
+                    spa::param::format::FormatProperties::MediaType.as_raw(),
+                    spa::pod::Value::Id(spa::utils::Id(spa::param::format::MediaType::Video.as_raw())),
+                ),
+                spa::pod::Property::new(
+                    spa::param::format::FormatProperties::MediaSubtype.as_raw(),
+                    spa::pod::Value::Id(spa::utils::Id(spa::param::format::MediaSubtype::Raw.as_raw())),
+                ),
+                spa::pod::Property::new(
+                    spa::param::format::FormatProperties::VideoFormat.as_raw(),
+                    spa::pod::Value::Choice(spa::pod::ChoiceValue::Id(spa::utils::Choice(
+                        spa::utils::ChoiceFlags::empty(),
+                        spa::utils::ChoiceEnum::Enum {
+                            default: spa::utils::Id(spa::param::video::VideoFormat::BGRx.as_raw()),
+                            alternatives: vec![
+                                spa::utils::Id(spa::param::video::VideoFormat::BGRx.as_raw()),
+                                spa::utils::Id(spa::param::video::VideoFormat::BGRA.as_raw()),
+                                spa::utils::Id(spa::param::video::VideoFormat::RGBx.as_raw()),
+                                spa::utils::Id(spa::param::video::VideoFormat::RGBA.as_raw()),
+                            ],
+                        },
+                    ))),
+                ),
             ],
         }),
     )
@@ -300,16 +291,17 @@ fn pipewire_capture_loop(
     .0
     .into_inner();
 
-    // SAFETY: the serialized pod data is valid for the lifetime of params_buffer
-    let pod_ptr = format_pod.as_ptr() as *const spa::pod::Pod;
-    let pod_ref = unsafe { &*pod_ptr };
+    let pod = spa::pod::Pod::from_bytes(&format_pod_bytes)
+        .context("Failed to parse serialized SPA format pod")?;
+
+    let mut params = [pod];
 
     stream.connect(
         spa::utils::Direction::Input,
         Some(node_id),
         pipewire::stream::StreamFlags::AUTOCONNECT
             | pipewire::stream::StreamFlags::MAP_BUFFERS,
-        &mut [pod_ref],
+        &mut params,
     ).context("Failed to connect PipeWire stream")?;
 
     info!("PipeWire stream connected to node {}, waiting for frames...", node_id);
