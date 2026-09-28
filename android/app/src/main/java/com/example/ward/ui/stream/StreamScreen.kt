@@ -11,16 +11,21 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -36,6 +41,8 @@ private const val KEYSYM_TAB = 0xFF09
 private const val KEYSYM_RETURN = 0xFF0D
 private const val KEYSYM_ESCAPE = 0xFF1B
 private const val KEYSYM_SPACE = 0x0020
+private const val KEYSYM_PAGE_UP = 0xFF55
+private const val KEYSYM_PAGE_DOWN = 0xFF56
 private const val KEYSYM_LEFT = 0xFF51
 private const val KEYSYM_UP = 0xFF52
 private const val KEYSYM_RIGHT = 0xFF53
@@ -44,6 +51,7 @@ private const val KEYSYM_SUPER = 0xFFEB
 
 // Linux evdev keycodes
 private const val EVDEV_KEY_LEFTCTRL = 29
+private const val EVDEV_KEY_A = 30
 private const val EVDEV_KEY_C = 46
 private const val EVDEV_KEY_V = 47
 private const val EVDEV_KEY_Z = 44
@@ -57,8 +65,12 @@ fun WardRemoteApp() {
     var streamWidth by remember { mutableIntStateOf(1920) }
     var streamHeight by remember { mutableIntStateOf(1080) }
     var showControls by remember { mutableStateOf(true) }
-    var showKeyboardBar by remember { mutableStateOf(false) }
-    var textInput by remember { mutableStateOf("") }
+    var showShortcuts by remember { mutableStateOf(false) }
+
+    // Direct real-time typing state
+    var imeBuffer by remember { mutableStateOf(TextFieldValue("")) }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     var videoDecoder: VideoDecoder? by remember { mutableStateOf(null) }
     var wardClient: WardClient? by remember { mutableStateOf(null) }
@@ -69,11 +81,11 @@ fun WardRemoteApp() {
         wardClient?.sendInput(WardMessage.KeyUp(code))
     }
 
-    fun sendText(text: String) {
-        for (ch in text) {
-            val keysym = ch.code
-            sendKeysym(keysym)
-        }
+    fun sendCtrlKey(evdevKey: Int) {
+        wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_LEFTCTRL))
+        wardClient?.sendInput(WardMessage.KeyDown(evdevKey))
+        wardClient?.sendInput(WardMessage.KeyUp(evdevKey))
+        wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
     }
 
     DisposableEffect(Unit) {
@@ -86,7 +98,7 @@ fun WardRemoteApp() {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         when (val state = connectionState) {
             is ConnectionState.Connected -> {
-                // Outer container with constraints to maintain exact aspect ratio
+                // 1. Aspect-ratio preserved video surface
                 BoxWithConstraints(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -98,7 +110,6 @@ fun WardRemoteApp() {
                         16f / 9f
                     }
 
-                    // Constrain without stretching in either portrait or landscape
                     val videoModifier = if (containerAspect > videoAspect) {
                         Modifier.fillMaxHeight().aspectRatio(videoAspect)
                     } else {
@@ -118,7 +129,6 @@ fun WardRemoteApp() {
                                         if (streamWidth > 0 && streamHeight > 0) {
                                             decoder.start(streamWidth, streamHeight)
                                         }
-                                        // Request immediate IDR keyframe so video renders instantly
                                         wardClient?.requestKeyframe()
                                     }
 
@@ -129,59 +139,191 @@ fun WardRemoteApp() {
                                         videoDecoder = null
                                     }
                                 })
-
-                                // Touch event dispatcher for remote desktop control
-                                var lastX = 0f
-                                var lastY = 0f
-                                var isDown = false
-                                var downTime = 0L
-
-                                setOnTouchListener { v, event ->
-                                    when (event.actionMasked) {
-                                        MotionEvent.ACTION_DOWN -> {
-                                            lastX = event.x
-                                            lastY = event.y
-                                            isDown = true
-                                            downTime = System.currentTimeMillis()
-                                            v.performClick()
-                                            true
-                                        }
-                                        MotionEvent.ACTION_MOVE -> {
-                                            if (event.pointerCount == 1) {
-                                                // Relative mouse movement
-                                                val dx = event.x - lastX
-                                                val dy = event.y - lastY
-                                                wardClient?.sendInput(WardMessage.MouseMove(dx, dy))
-                                                lastX = event.x
-                                                lastY = event.y
-                                            } else if (event.pointerCount == 2) {
-                                                // Two-finger scroll
-                                                val dy = event.y - lastY
-                                                val scrollStep = if (dy > 0) 1.0f else -1.0f
-                                                wardClient?.sendInput(WardMessage.MouseScroll(0f, scrollStep))
-                                                lastY = event.y
-                                            }
-                                            true
-                                        }
-                                        MotionEvent.ACTION_UP -> {
-                                            val duration = System.currentTimeMillis() - downTime
-                                            if (duration < 250) {
-                                                // Tap -> Left Click
-                                                wardClient?.sendInput(WardMessage.MouseButton(1, 1))
-                                                wardClient?.sendInput(WardMessage.MouseButton(1, 0))
-                                            }
-                                            isDown = false
-                                            true
-                                        }
-                                        else -> false
-                                    }
-                                }
                             }
                         }
                     )
                 }
 
-                // Top Floating Overlay Bar (Stats & Quick Actions)
+                // 2. Full-screen Multi-Gesture Touchpad Overlay (handles video + blank area below)
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        android.view.View(ctx).apply {
+                            // Touch tracking variables
+                            var lastX1 = 0f
+                            var lastY1 = 0f
+                            var lastX2 = 0f
+                            var lastY2 = 0f
+                            var downX = 0f
+                            var downY = 0f
+                            var downTime = 0L
+                            var pointerCount = 0
+                            var isDragging = false
+                            var threeFingerSwipeStartY = 0f
+
+                            setOnTouchListener { v, event ->
+                                pointerCount = event.pointerCount
+
+                                when (event.actionMasked) {
+                                    MotionEvent.ACTION_DOWN -> {
+                                        downX = event.x
+                                        downY = event.y
+                                        lastX1 = event.x
+                                        lastY1 = event.y
+                                        downTime = System.currentTimeMillis()
+                                        isDragging = false
+                                        v.performClick()
+                                        true
+                                    }
+
+                                    MotionEvent.ACTION_POINTER_DOWN -> {
+                                        if (pointerCount == 2) {
+                                            lastX1 = event.getX(0)
+                                            lastY1 = event.getY(0)
+                                            lastX2 = event.getX(1)
+                                            lastY2 = event.getY(1)
+                                        } else if (pointerCount == 3) {
+                                            threeFingerSwipeStartY = event.getY(0)
+                                        }
+                                        true
+                                    }
+
+                                    MotionEvent.ACTION_MOVE -> {
+                                        val now = System.currentTimeMillis()
+
+                                        if (pointerCount == 1) {
+                                            val dx = event.x - lastX1
+                                            val dy = event.y - lastY1
+                                            val totalDist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
+
+                                            // Enter drag mode if held down for > 350ms
+                                            if (!isDragging && now - downTime > 350 && totalDist < 25) {
+                                                isDragging = true
+                                                // Mouse button down for drag & drop / text selection
+                                                wardClient?.sendInput(WardMessage.MouseButton(1, 1))
+                                            }
+
+                                            wardClient?.sendInput(WardMessage.MouseMove(dx, dy))
+                                            lastX1 = event.x
+                                            lastY1 = event.y
+                                        } else if (pointerCount == 2) {
+                                            // 2-finger scroll
+                                            val currentY1 = event.getY(0)
+                                            val currentY2 = event.getY(1)
+                                            val currentX1 = event.getX(0)
+                                            val currentX2 = event.getX(1)
+
+                                            val dy = ((currentY1 - lastY1) + (currentY2 - lastY2)) / 2f
+                                            val dx = ((currentX1 - lastX1) + (currentX2 - lastX2)) / 2f
+
+                                            if (Math.abs(dy) > 2f) {
+                                                // Positive dy (finger down) -> scroll down (-1)
+                                                // Negative dy (finger up) -> scroll up (1)
+                                                val stepY = if (dy > 0) 1.0f else -1.0f
+                                                wardClient?.sendInput(WardMessage.MouseScroll(0f, stepY))
+                                            }
+
+                                            if (Math.abs(dx) > 4f) {
+                                                val stepX = if (dx > 0) 1.0f else -1.0f
+                                                wardClient?.sendInput(WardMessage.MouseScroll(stepX, 0f))
+                                            }
+
+                                            lastX1 = currentX1
+                                            lastY1 = currentY1
+                                            lastX2 = currentX2
+                                            lastY2 = currentY2
+                                        } else if (pointerCount == 3) {
+                                            // 3-finger swipe up for Super / Windows key
+                                            val currentY = event.getY(0)
+                                            if (threeFingerSwipeStartY - currentY > 120f) {
+                                                sendKeysym(KEYSYM_SUPER)
+                                                threeFingerSwipeStartY = currentY // reset to prevent retrigger
+                                            }
+                                        }
+                                        true
+                                    }
+
+                                    MotionEvent.ACTION_POINTER_UP -> {
+                                        val duration = System.currentTimeMillis() - downTime
+                                        if (pointerCount == 2 && duration < 250) {
+                                            // 2-finger tap -> Right Click!
+                                            wardClient?.sendInput(WardMessage.MouseButton(2, 1))
+                                            wardClient?.sendInput(WardMessage.MouseButton(2, 0))
+                                        } else if (pointerCount == 3 && duration < 250) {
+                                            // 3-finger tap -> Middle Click!
+                                            wardClient?.sendInput(WardMessage.MouseButton(3, 1))
+                                            wardClient?.sendInput(WardMessage.MouseButton(3, 0))
+                                        }
+                                        true
+                                    }
+
+                                    MotionEvent.ACTION_UP -> {
+                                        val duration = System.currentTimeMillis() - downTime
+                                        val dist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
+
+                                        if (isDragging) {
+                                            // Release drag
+                                            wardClient?.sendInput(WardMessage.MouseButton(1, 0))
+                                            isDragging = false
+                                        } else if (duration < 220 && dist < 20) {
+                                            // 1-finger quick tap -> Left Click
+                                            wardClient?.sendInput(WardMessage.MouseButton(1, 1))
+                                            wardClient?.sendInput(WardMessage.MouseButton(1, 0))
+                                        }
+                                        true
+                                    }
+
+                                    else -> false
+                                }
+                            }
+                        }
+                    }
+                )
+
+                // 3. Invisible Real-Time Input Connection: Types directly to PC
+                BasicTextField(
+                    value = imeBuffer,
+                    onValueChange = { newText ->
+                        val oldStr = imeBuffer.text
+                        val newStr = newText.text
+
+                        if (newStr.length > oldStr.length) {
+                            // Characters typed directly -> send to PC instantly!
+                            val addedChars = newStr.substring(oldStr.length)
+                            for (ch in addedChars) {
+                                if (ch == '\n') {
+                                    sendKeysym(KEYSYM_RETURN)
+                                } else {
+                                    sendKeysym(ch.code)
+                                }
+                            }
+                        } else if (newStr.length < oldStr.length) {
+                            // Backspace tapped on phone keyboard -> send Backspace to PC!
+                            val deletedCount = oldStr.length - newStr.length
+                            repeat(deletedCount) {
+                                sendKeysym(KEYSYM_BACKSPACE)
+                            }
+                        }
+
+                        // Maintain a safe buffer size so text input never fills up memory
+                        imeBuffer = if (newStr.length > 50) {
+                            TextFieldValue("")
+                        } else {
+                            newText
+                        }
+                    },
+                    modifier = Modifier
+                        .size(1.dp)
+                        .alpha(0.001f)
+                        .focusRequester(focusRequester),
+                    keyboardOptions = KeyboardOptions(
+                        autoCorrectEnabled = false,
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Default
+                    )
+                )
+
+                // 4. Top Floating Bar (Stats, Keyboard Toggle, Shortcuts Toggle, Refresh, Exit)
                 AnimatedVisibility(
                     visible = showControls,
                     enter = fadeIn(),
@@ -211,15 +353,29 @@ fun WardRemoteApp() {
                                 fontWeight = FontWeight.Bold
                             )
 
+                            // Direct Phone Keyboard Trigger
                             Button(
-                                onClick = { showKeyboardBar = !showKeyboardBar },
+                                onClick = {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1)),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            // Quick Shortcuts Bar Toggle
+                            Button(
+                                onClick = { showShortcuts = !showShortcuts },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (showKeyboardBar) Color(0xFF0288D1) else Color(0xFF37474F)
+                                    containerColor = if (showShortcuts) Color(0xFF00796B) else Color(0xFF37474F)
                                 ),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                 modifier = Modifier.height(30.dp)
                             ) {
-                                Text("⌨ Keys", fontSize = 11.sp)
+                                Text("Shortcuts", fontSize = 11.sp)
                             }
 
                             Button(
@@ -247,109 +403,77 @@ fun WardRemoteApp() {
                     }
                 }
 
-                // Bottom Keyboard & Shortcut Bar Overlay
+                // 5. Bottom Shortcut & Scroll Toolbar (Sticky overlay with Scroll Up/Down, Page Up/Down, etc.)
                 AnimatedVisibility(
-                    visible = showKeyboardBar,
+                    visible = showShortcuts,
                     enter = fadeIn(),
                     exit = fadeOut(),
                     modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp, start = 8.dp, end = 8.dp)
                 ) {
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xEE1E1E1E)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xEE1A1A1A)),
                         shape = RoundedCornerShape(16.dp),
                         elevation = CardDefaults.cardElevation(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            // Text Input Field for typing into remote desktop
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = textInput,
-                                    onValueChange = { textInput = it },
-                                    placeholder = { Text("Type text here to send...", fontSize = 13.sp) },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                                    keyboardActions = KeyboardActions(onSend = {
-                                        if (textInput.isNotEmpty()) {
-                                            sendText(textInput)
-                                            textInput = ""
-                                        }
-                                    }),
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedTextColor = Color.White,
-                                        unfocusedTextColor = Color.White,
-                                        focusedBorderColor = Color(0xFF4FC3F7),
-                                        unfocusedBorderColor = Color(0xFF546E7A)
-                                    )
-                                )
-                                Button(
-                                    onClick = {
-                                        if (textInput.isNotEmpty()) {
-                                            sendText(textInput)
-                                            textInput = ""
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1)),
-                                    modifier = Modifier.height(48.dp)
-                                ) {
-                                    Text("Send")
-                                }
-                            }
-
-                            // Quick keys toolbar
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            // Row 1: Dedicated Scroll and Page Navigation
                             Row(
                                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                val quickKeyButton = @Composable { label: String, onClick: () -> Unit ->
+                                val navButton = @Composable { label: String, color: Color, onClick: () -> Unit ->
                                     Button(
                                         onClick = onClick,
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C3E50)),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = color),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                         modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+
+                                // Dedicated Scroll Up / Down ticks
+                                navButton("▲ Scroll Up", Color(0xFF00695C)) {
+                                    wardClient?.sendInput(WardMessage.MouseScroll(0f, -1.0f))
+                                }
+                                navButton("▼ Scroll Down", Color(0xFF00695C)) {
+                                    wardClient?.sendInput(WardMessage.MouseScroll(0f, 1.0f))
+                                }
+                                navButton("PgUp", Color(0xFF37474F)) { sendKeysym(KEYSYM_PAGE_UP) }
+                                navButton("PgDn", Color(0xFF37474F)) { sendKeysym(KEYSYM_PAGE_DOWN) }
+                                navButton("Super (Win)", Color(0xFFE65100)) { sendKeysym(KEYSYM_SUPER) }
+                                navButton("Esc", Color(0xFF37474F)) { sendKeysym(KEYSYM_ESCAPE) }
+                                navButton("Tab", Color(0xFF37474F)) { sendKeysym(KEYSYM_TAB) }
+                                navButton("Enter", Color(0xFF0277BD)) { sendKeysym(KEYSYM_RETURN) }
+                                navButton("Bksp", Color(0xFFC62828)) { sendKeysym(KEYSYM_BACKSPACE) }
+                            }
+
+                            // Row 2: Clipboard & Arrow navigation
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val actionButton = @Composable { label: String, onClick: () -> Unit ->
+                                    Button(
+                                        onClick = onClick,
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF263238)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(30.dp)
                                     ) {
                                         Text(label, fontSize = 11.sp)
                                     }
                                 }
 
-                                quickKeyButton("Enter") { sendKeysym(KEYSYM_RETURN) }
-                                quickKeyButton("Bksp") { sendKeysym(KEYSYM_BACKSPACE) }
-                                quickKeyButton("Space") { sendKeysym(KEYSYM_SPACE) }
-                                quickKeyButton("Tab") { sendKeysym(KEYSYM_TAB) }
-                                quickKeyButton("Esc") { sendKeysym(KEYSYM_ESCAPE) }
-                                quickKeyButton("Super") { sendKeysym(KEYSYM_SUPER) }
+                                actionButton("Ctrl+C") { sendCtrlKey(EVDEV_KEY_C) }
+                                actionButton("Ctrl+V") { sendCtrlKey(EVDEV_KEY_V) }
+                                actionButton("Ctrl+Z") { sendCtrlKey(EVDEV_KEY_Z) }
+                                actionButton("Ctrl+A") { sendCtrlKey(EVDEV_KEY_A) }
 
-                                quickKeyButton("Ctrl+C") {
-                                    wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_LEFTCTRL))
-                                    wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_C))
-                                    wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_C))
-                                    wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
-                                }
-                                quickKeyButton("Ctrl+V") {
-                                    wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_LEFTCTRL))
-                                    wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_V))
-                                    wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_V))
-                                    wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
-                                }
-                                quickKeyButton("Ctrl+Z") {
-                                    wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_LEFTCTRL))
-                                    wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_Z))
-                                    wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_Z))
-                                    wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
-                                }
-
-                                quickKeyButton("←") { sendKeysym(KEYSYM_LEFT) }
-                                quickKeyButton("↑") { sendKeysym(KEYSYM_UP) }
-                                quickKeyButton("→") { sendKeysym(KEYSYM_RIGHT) }
-                                quickKeyButton("↓") { sendKeysym(KEYSYM_DOWN) }
+                                actionButton("← Left") { sendKeysym(KEYSYM_LEFT) }
+                                actionButton("↑ Up") { sendKeysym(KEYSYM_UP) }
+                                actionButton("↓ Down") { sendKeysym(KEYSYM_DOWN) }
+                                actionButton("→ Right") { sendKeysym(KEYSYM_RIGHT) }
                             }
                         }
                     }
