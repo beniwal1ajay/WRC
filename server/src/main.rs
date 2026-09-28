@@ -9,20 +9,19 @@
 //! 4. Captures frames from the stream.
 //! 5. Saves captured frames as PNG files for verification.
 
-mod portal;
-mod capture;
-
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use portal::remote_desktop::{ButtonState, RemoteDesktopPortal, buttons, device_types, keys};
-use portal::screencast::{CursorMode, ScreenCastPortal, SourceType};
-use capture::pipewire_capture::{CaptureStats, CapturedFrame, FrameFormat, run_pipewire_capture};
+use ward_server::capture::pipewire_capture::{CaptureStats, CapturedFrame, FrameFormat, run_pipewire_capture};
+use ward_server::network::{DEFAULT_PORT, WardServer, handle_client_session};
+use ward_server::portal::remote_desktop::{ButtonState, RemoteDesktopPortal, buttons, device_types, keys};
+use ward_server::portal::screencast::{CursorMode, ScreenCastPortal, SourceType};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,7 +50,7 @@ async fn main() -> Result<()> {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("input");
+    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("stream");
 
     match mode {
         "capture" | "--capture" => {
@@ -67,7 +66,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        "input" | "--input" | _ => {
+        "input" | "--input" => {
             info!("Mode: Milestone 2 — Remote Input Proof");
             match run_remote_input_poc().await {
                 Ok(()) => {
@@ -80,7 +79,155 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        "stream" | "--stream" | "server" | "--server" | _ => {
+            info!("Mode: Milestone 3 — TLS 1.3 Streaming Server");
+            let port = args.get(2)
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(DEFAULT_PORT);
+
+            match run_streaming_server(port).await {
+                Ok(()) => {
+                    info!("Streaming server shut down cleanly");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Streaming server failed: {:#}", e);
+                    Err(e)
+                }
+            }
+        }
     }
+}
+
+/// Milestone 3: Live TLS 1.3 Streaming Server.
+///
+/// Starts the combined ScreenCast + RemoteDesktop portal session, initializes
+/// PipeWire capture, starts WardServer on `port`, and streams H.264 video to
+/// connected Android clients while accepting remote input commands.
+async fn run_streaming_server(port: u16) -> Result<()> {
+    info!("==================================================");
+    info!("   WARD - Wayland Android Remote Desktop Server   ");
+    info!("==================================================");
+
+    // Step 1: Initialize combined RemoteDesktop session
+    info!("Step 1: Creating combined RemoteDesktop + ScreenCast portal session...");
+    let mut portal = RemoteDesktopPortal::new().await?;
+    portal.create_session().await?;
+    portal.select_devices(device_types::KEYBOARD | device_types::POINTER).await?;
+    portal.select_sources(SourceType::Monitor, CursorMode::Embedded).await?;
+
+    info!("Step 2: Starting session...");
+    info!(">>> Please click 'Share' on the GNOME dialog if prompted <<<");
+    let streams = portal.start("").await?;
+    let stream = streams.first().context("No capture streams returned by portal")?;
+    info!(
+        "Capture stream active: PipeWire node={}, size={:?}",
+        stream.pipewire_node_id, stream.size
+    );
+
+    // Step 2: Open PipeWire remote
+    let pw_fd = portal.open_pipewire_remote().await?;
+    info!("PipeWire remote fd obtained: {}", pw_fd.as_raw_fd());
+
+    let running = Arc::new(AtomicBool::new(true));
+    let stats = Arc::new(CaptureStats::default());
+
+    // PipeWire thread sends frames to sync channel
+    let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(4);
+
+    let capture_handle = run_pipewire_capture(
+        pw_fd,
+        stream.pipewire_node_id,
+        pw_tx,
+        running.clone(),
+        stats.clone(),
+    )?;
+
+    // Shared sender to dynamically forward frames to connected client
+    let active_client_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::Sender<CapturedFrame>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
+    // Bridge thread between sync PipeWire channel and active client async channel
+    let bridge_running = running.clone();
+    let bridge_client_tx = active_client_tx.clone();
+    std::thread::spawn(move || {
+        while bridge_running.load(Ordering::Relaxed) {
+            match pw_rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(frame) => {
+                    let sender_opt = bridge_client_tx.lock().unwrap().clone();
+                    if let Some(tx) = sender_opt {
+                        let _ = tx.blocking_send(frame);
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    let portal_arc = Arc::new(tokio::sync::Mutex::new(portal));
+    let server = WardServer::bind(port).await?;
+    let local_addr = server.local_addr()?;
+
+    info!("🚀 WARD Streaming Server listening on {}", local_addr);
+    info!("Awaiting connection from Android client...");
+    info!("(Press Ctrl+C to shut down)");
+
+    // Catch Ctrl+C
+    let ctrlc_running = running.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            info!("Received shutdown signal (Ctrl+C). Terminating...");
+            ctrlc_running.store(false, Ordering::Relaxed);
+        }
+    });
+
+    while running.load(Ordering::Relaxed) {
+        tokio::select! {
+            accept_result = server.accept() => {
+                match accept_result {
+                    Ok((tls_stream, peer_addr)) => {
+                        info!("New connection from: {}", peer_addr);
+                        let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(4);
+                        *active_client_tx.lock().unwrap() = Some(client_tx);
+
+                        let client_running = running.clone();
+                        let client_portal = portal_arc.clone();
+
+                        if let Err(e) = handle_client_session(
+                            tls_stream,
+                            peer_addr,
+                            client_rx,
+                            Some(client_portal),
+                            client_running,
+                        ).await {
+                            warn!("Client session ended with error: {:#}", e);
+                        } else {
+                            info!("Client session closed cleanly");
+                        }
+
+                        *active_client_tx.lock().unwrap() = None;
+                        info!("Waiting for next client connection...");
+                    }
+                    Err(e) => {
+                        if running.load(Ordering::Relaxed) {
+                            warn!("Error accepting connection: {:#}", e);
+                        }
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+        }
+    }
+
+    running.store(false, Ordering::Relaxed);
+    let _ = capture_handle.join();
+    info!("WARD Streaming Server stopped.");
+    Ok(())
 }
 
 /// Milestone 2: Proof of Remote Input injection via combined RemoteDesktop + ScreenCast portal.
