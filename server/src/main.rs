@@ -133,7 +133,7 @@ async fn run_streaming_server(port: u16) -> Result<()> {
     let stats = Arc::new(CaptureStats::default());
 
     // PipeWire thread sends frames to sync channel
-    let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(4);
+    let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(8);
 
     let capture_handle = run_pipewire_capture(
         pw_fd,
@@ -156,7 +156,8 @@ async fn run_streaming_server(port: u16) -> Result<()> {
                 Ok(frame) => {
                     let sender_opt = bridge_client_tx.lock().unwrap().clone();
                     if let Some(tx) = sender_opt {
-                        let _ = tx.blocking_send(frame);
+                        // Use try_send so encoder latency never stalls PipeWire
+                        let _ = tx.try_send(frame);
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,

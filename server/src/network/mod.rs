@@ -179,10 +179,20 @@ pub async fn handle_client_session(
                                 let _ = p.notify_pointer_axis_discrete(0, steps).await;
                             }
                             Message::KeyDown { keycode } => {
-                                let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Pressed).await;
+                                if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
+                                    let keysym = (keycode & 0x7FFF_FFFF) as i32;
+                                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Pressed).await;
+                                } else {
+                                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Pressed).await;
+                                }
                             }
                             Message::KeyUp { keycode } => {
-                                let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
+                                if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
+                                    let keysym = (keycode & 0x7FFF_FFFF) as i32;
+                                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
+                                } else {
+                                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
+                                }
                             }
                             _ => {}
                         }
@@ -199,6 +209,8 @@ pub async fn handle_client_session(
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
+            biased;
+
             frame_opt = frame_rx.recv() => {
                 match frame_opt {
                     Some(frame) => {

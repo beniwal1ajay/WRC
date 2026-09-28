@@ -4,6 +4,8 @@ import android.media.MediaCodec
 import android.media.MediaCodec.BufferInfo
 import android.media.MediaFormat
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -20,6 +22,8 @@ class VideoDecoder(
     private var outputThread: Thread? = null
     private val frameCounter = AtomicInteger(0)
     private var lastFpsTime = System.currentTimeMillis()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var hasSeenKeyframe = false
 
     @Synchronized
     fun start(width: Int, height: Int) {
@@ -55,6 +59,13 @@ class VideoDecoder(
         val decoder = codec ?: return
         if (!isRunning.get()) return
 
+        if (isKeyframe) {
+            hasSeenKeyframe = true
+        } else if (!hasSeenKeyframe) {
+            // Drop P-frames until the first IDR/SPS keyframe is received
+            return
+        }
+
         try {
             val inputIndex = decoder.dequeueInputBuffer(10_000) // 10ms timeout
             if (inputIndex >= 0) {
@@ -65,8 +76,6 @@ class VideoDecoder(
                     val flags = if (isKeyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
                     decoder.queueInputBuffer(inputIndex, 0, data.size, timestampNs / 1000, flags)
                 }
-            } else {
-                Log.w(TAG, "Dropped frame: input buffer unavailable")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error feeding frame to decoder: ${e.message}")
@@ -89,7 +98,7 @@ class VideoDecoder(
                         if (now - lastFpsTime >= 1000) {
                             val elapsedSec = (now - lastFpsTime) / 1000.0
                             val fps = (count / elapsedSec).toInt()
-                            onFpsUpdate(fps)
+                            mainHandler.post { onFpsUpdate(fps) }
                             frameCounter.set(0)
                             lastFpsTime = now
                         }
