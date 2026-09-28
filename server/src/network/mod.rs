@@ -8,8 +8,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
 
 use anyhow::{Context, Result};
 use rcgen::generate_simple_self_signed;
@@ -17,12 +16,10 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::capture::pipewire_capture::CapturedFrame;
-use crate::encoder::{EncoderSettings, VideoEncoder};
-use crate::portal::remote_desktop::{ButtonState, RemoteDesktopPortal, buttons};
-use crate::protocol::{self, Message};
+use crate::portal::remote_desktop::RemoteDesktopPortal;
 
 /// Default TCP port for the WARD server.
 pub const DEFAULT_PORT: u16 = 9740;
@@ -58,245 +55,12 @@ pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
 pub async fn handle_client_session(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
-    mut frame_rx: mpsc::Receiver<CapturedFrame>,
+    frame_rx: mpsc::Receiver<CapturedFrame>,
     portal: Option<Arc<tokio::sync::Mutex<RemoteDesktopPortal>>>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
-    info!("TLS 1.3 handshake completed with {}", peer_addr);
-
-    let (mut reader, mut writer) = tokio::io::split(stream);
-    let sequence = Arc::new(AtomicU32::new(1));
-
-    // 1. Initial Handshake: Read CONNECTION_INIT
-    let (_header, init_msg) = tokio::time::timeout(
-        Duration::from_secs(10),
-        protocol::read_message(&mut reader),
-    )
-    .await
-    .context("Timed out waiting for CONNECTION_INIT")?
-    .context("Failed to read CONNECTION_INIT")?;
-
-    match init_msg {
-        Message::ConnectionInit { protocol_version, device_name, .. } => {
-            info!(
-                "Client connected: '{}' (protocol v{})",
-                device_name, protocol_version
-            );
-        }
-        other => {
-            warn!("Expected ConnectionInit, received {:?}", other.msg_type());
-            let err = Message::Error {
-                code: 0x0004,
-                message: "Expected ConnectionInit message".to_string(),
-            };
-            let seq = sequence.fetch_add(1, Ordering::Relaxed);
-            let _ = protocol::write_message(&mut writer, &err, seq).await;
-            return Ok(());
-        }
-    }
-
-    // 2. Accept session
-    let accepted = Message::SessionAccepted { session_id: 1 };
-    let seq = sequence.fetch_add(1, Ordering::Relaxed);
-    protocol::write_message(&mut writer, &accepted, seq).await
-        .context("Failed to send SessionAccepted")?;
-
-    // 3. Initialize H.264 Encoder
-    let mut encoder = VideoEncoder::new(EncoderSettings::default())
-        .context("Failed to initialize video encoder")?;
-
-    // Send initial VIDEO_CONFIG
-    let video_config = Message::VideoConfig {
-        width: encoder.width() as u16,
-        height: encoder.height() as u16,
-        codec: 1, // H.264
-        fps_target: 60,
-    };
-    let seq = sequence.fetch_add(1, Ordering::Relaxed);
-    protocol::write_message(&mut writer, &video_config, seq).await
-        .context("Failed to send VideoConfig")?;
-
-    info!("Video stream configured: {}x{} @ 60fps (H.264)", encoder.width(), encoder.height());
-
-    // Channel for client input events -> input dispatcher
-    let (input_tx, mut input_rx) = mpsc::channel::<Message>(512);
-    let keyframe_requested = Arc::new(AtomicBool::new(true)); // force keyframe on start
-    let kf_req_clone = keyframe_requested.clone();
-    let running_reader = running.clone();
-
-    // Spawn reader task for client input messages
-    let reader_handle = tokio::spawn(async move {
-        while running_reader.load(Ordering::Relaxed) {
-            match protocol::read_message(&mut reader).await {
-                Ok((_header, msg)) => match msg {
-                    Message::KeyframeRequest => {
-                        debug!("Client requested keyframe");
-                        kf_req_clone.store(true, Ordering::Relaxed);
-                    }
-                    Message::Disconnect => {
-                        info!("Client sent disconnect request");
-                        break;
-                    }
-                    input_event => {
-                        if input_tx.send(input_event).await.is_err() {
-                            break;
-                        }
-                    }
-                },
-                Err(e) => {
-                    debug!("Client read error or disconnected: {:#}", e);
-                    break;
-                }
-            }
-        }
-    });
-
-    // Spawn input dispatcher task (injects events via RemoteDesktop portal)
-    let portal_clone = portal.clone();
-    let running_input = running.clone();
-    let input_dispatcher = tokio::spawn(async move {
-        let mut pressed_keys: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-        while running_input.load(Ordering::Relaxed) {
-            match input_rx.recv().await {
-                Some(msg) => {
-                    if let Some(ref p_lock) = portal_clone {
-                        let p = p_lock.lock().await;
-                        match msg {
-                            Message::MouseMove { x, y } => {
-                                let _ = p.notify_pointer_motion(x as f64, y as f64).await;
-                            }
-                            Message::MouseButton { button, state } => {
-                                let btn_code = match button {
-                                    1 => buttons::BTN_LEFT,
-                                    2 => buttons::BTN_RIGHT,
-                                    3 => buttons::BTN_MIDDLE,
-                                    _ => buttons::BTN_LEFT,
-                                };
-                                let btn_state = if state == 1 { ButtonState::Pressed } else { ButtonState::Released };
-                                let _ = p.notify_pointer_button(btn_code, btn_state).await;
-                            }
-                            Message::MouseScroll { dy, .. } => {
-                                let steps = if dy > 0.0 { -1 } else { 1 };
-                                let _ = p.notify_pointer_axis_discrete(0, steps).await;
-                            }
-                            Message::KeyDown { keycode } => {
-                                pressed_keys.insert(keycode);
-                                if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
-                                    let keysym = (keycode & 0x7FFF_FFFF) as i32;
-                                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Pressed).await;
-                                } else {
-                                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Pressed).await;
-                                }
-                            }
-                            Message::KeyUp { keycode } => {
-                                pressed_keys.remove(&keycode);
-                                if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
-                                    let keysym = (keycode & 0x7FFF_FFFF) as i32;
-                                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
-                                } else {
-                                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                None => break,
-            }
-        }
-
-        // Safety cleanup: release any keys still marked as pressed
-        if let Some(ref p_lock) = portal_clone {
-            let p = p_lock.lock().await;
-            for keycode in pressed_keys {
-                if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
-                    let keysym = (keycode & 0x7FFF_FFFF) as i32;
-                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
-                } else {
-                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
-                }
-            }
-        }
-    });
-
-    // 4. Video Streaming Loop: pipe captured frames -> encoder -> TLS socket
-    info!("Streaming video to client...");
-    let mut frames_sent: u64 = 0;
-
-    while running.load(Ordering::Relaxed) {
-        tokio::select! {
-            biased;
-
-            frame_opt = frame_rx.recv() => {
-                match frame_opt {
-                    Some(frame) => {
-                        if keyframe_requested.swap(false, Ordering::Relaxed) {
-                            encoder.force_keyframe();
-                        }
-
-                        let now_ns = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64;
-
-                        match encoder.encode_bgrx(
-                            &frame.data,
-                            frame.width as usize,
-                            frame.height as usize,
-                            frame.stride as usize,
-                            now_ns,
-                        ) {
-                            Ok(packet) => {
-                                let msg = if packet.is_keyframe {
-                                    Message::VideoKeyframe {
-                                        timestamp_ns: packet.timestamp_ns,
-                                        data: packet.data,
-                                    }
-                                } else {
-                                    Message::VideoFrame {
-                                        timestamp_ns: packet.timestamp_ns,
-                                        data: packet.data,
-                                    }
-                                };
-
-                                let seq = sequence.fetch_add(1, Ordering::Relaxed);
-                                if let Err(e) = protocol::write_message(&mut writer, &msg, seq).await {
-                                    warn!("Failed to send video frame to client: {:#}", e);
-                                    break;
-                                }
-
-                                frames_sent += 1;
-                                if frames_sent % 60 == 0 {
-                                    debug!("Streamed {} frames to client", frames_sent);
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Encode error: {:#}", e);
-                            }
-                        }
-                    }
-                    None => {
-                        info!("Capture channel closed, stopping stream");
-                        break;
-                    }
-                }
-            }
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                if reader_handle.is_finished() {
-                    info!("Client disconnected");
-                    break;
-                }
-            }
-        }
-    }
-
-    info!("Session ended. Total frames streamed: {}", frames_sent);
-    running.store(false, Ordering::Relaxed);
-    let _ = input_dispatcher.await;
-    let _ = reader_handle.await;
-
-    Ok(())
+    let transport_stream = Box::new(crate::transport::lan::LanTransportStream::new(stream, peer_addr));
+    crate::session::run_session(transport_stream, frame_rx, portal, running).await
 }
 
 /// Standalone TLS Server Listener.
