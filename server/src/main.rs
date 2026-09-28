@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use portal::remote_desktop::{ButtonState, RemoteDesktopPortal, buttons, device_types, keys};
 use portal::screencast::{CursorMode, ScreenCastPortal, SourceType};
 use capture::pipewire_capture::{CaptureStats, CapturedFrame, FrameFormat, run_pipewire_capture};
 
@@ -35,7 +36,7 @@ async fn main() -> Result<()> {
         .with_thread_ids(true)
         .init();
 
-    info!("WARD Server starting — Milestone 1: Screen Capture Proof");
+    info!("WARD Server starting");
     info!("Session type: {}", std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into()));
     info!("Desktop: {}", std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into()));
 
@@ -44,23 +45,167 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     if session_type != "wayland" {
         warn!(
-            "XDG_SESSION_TYPE is '{}', expected 'wayland'. Screen capture may not work correctly.",
+            "XDG_SESSION_TYPE is '{}', expected 'wayland'. Screen capture and input injection may not work correctly.",
             session_type
         );
     }
 
-    // Run the screen capture proof of concept
-    match run_screen_capture_poc().await {
-        Ok(()) => {
-            info!("Screen capture proof of concept completed successfully!");
-            Ok(())
+    let args: Vec<String> = std::env::args().collect();
+    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("input");
+
+    match mode {
+        "capture" | "--capture" => {
+            info!("Mode: Milestone 1 — Screen Capture Proof");
+            match run_screen_capture_poc().await {
+                Ok(()) => {
+                    info!("Screen capture proof of concept completed successfully!");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Screen capture failed: {:#}", e);
+                    Err(e)
+                }
+            }
         }
-        Err(e) => {
-            error!("Screen capture failed: {:#}", e);
-            Err(e)
+        "input" | "--input" | _ => {
+            info!("Mode: Milestone 2 — Remote Input Proof");
+            match run_remote_input_poc().await {
+                Ok(()) => {
+                    info!("Remote input proof of concept completed successfully!");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Remote input failed: {:#}", e);
+                    Err(e)
+                }
+            }
         }
     }
 }
+
+/// Milestone 2: Proof of Remote Input injection via combined RemoteDesktop + ScreenCast portal.
+async fn run_remote_input_poc() -> Result<()> {
+    info!("=== Milestone 2: Remote Input Proof of Concept ===");
+
+    // Step 1: Create a RemoteDesktop session
+    info!("Step 1: Creating RemoteDesktop portal session...");
+    let mut portal = RemoteDesktopPortal::new().await?;
+    portal.create_session().await?;
+
+    // Step 2: Select devices (Keyboard + Pointer)
+    info!("Step 2: Selecting input devices (Keyboard + Pointer)...");
+    portal.select_devices(device_types::KEYBOARD | device_types::POINTER).await?;
+
+    // Step 3: Select sources (Monitor, combined session)
+    info!("Step 3: Selecting capture sources for combined session...");
+    portal.select_sources(SourceType::Monitor, CursorMode::Embedded).await?;
+
+    // Step 4: Start combined session
+    info!("Step 4: Starting combined RemoteDesktop + ScreenCast session...");
+    info!(">>> A permission dialog may appear on your screen. Please click 'Share' / 'Allow'. <<<");
+    let streams = portal.start("").await?;
+
+    info!("RemoteDesktop session active! Stream count: {}", streams.len());
+    for (i, stream) in streams.iter().enumerate() {
+        info!(
+            "  Stream {}: PipeWire node={}, size={:?}",
+            i, stream.pipewire_node_id, stream.size
+        );
+    }
+
+    info!("Starting input injection sequence in 2 seconds...");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Test 1: Relative Pointer Motion (Smooth Square)
+    info!("--- Test 1: Relative pointer motion (smooth square) ---");
+    // Move Right (+100px in 20 steps of 5px)
+    for _ in 0..20 {
+        portal.notify_pointer_motion(5.0, 0.0).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    // Move Down (+100px in 20 steps of 5px)
+    for _ in 0..20 {
+        portal.notify_pointer_motion(0.0, 5.0).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    // Move Left (-100px in 20 steps of 5px)
+    for _ in 0..20 {
+        portal.notify_pointer_motion(-5.0, 0.0).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    // Move Up (-100px in 20 steps of 5px)
+    for _ in 0..20 {
+        portal.notify_pointer_motion(0.0, -5.0).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    info!("✅ Test 1 passed: Relative pointer motion completed");
+
+    // Test 2: Absolute Pointer Motion
+    if let Some(stream) = streams.first() {
+        let node_id = stream.pipewire_node_id;
+        let (target_x, target_y) = if let Some((w, h)) = stream.size {
+            (w as f64 / 2.0, h as f64 / 2.0)
+        } else {
+            (960.0, 540.0)
+        };
+        info!(
+            "--- Test 2: Absolute pointer motion to stream center ({}, {}) on node {} ---",
+            target_x, target_y, node_id
+        );
+        portal.notify_pointer_motion_absolute(node_id, target_x, target_y).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        info!("✅ Test 2 passed: Absolute pointer motion completed");
+    }
+
+    // Test 3: Mouse Buttons
+    info!("--- Test 3: Mouse button clicks ---");
+    portal.click_pointer_button(buttons::BTN_LEFT).await?;
+    info!("  Left click sent");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    info!("✅ Test 3 passed: Mouse clicks completed");
+
+    // Test 4: Mouse Scrolling
+    info!("--- Test 4: Pointer scrolling ---");
+    portal.notify_pointer_axis_discrete(0, -1).await?; // scroll up
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    portal.notify_pointer_axis_discrete(0, 1).await?;  // scroll down
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    info!("✅ Test 4 passed: Mouse scroll completed");
+
+    // Test 5: Keyboard Keycodes & Modifier Keys
+    info!("--- Test 5: Keyboard keycodes (Shift modifier + keycode) ---");
+    // Press Shift
+    portal.notify_keyboard_keycode(keys::KEY_LEFT_SHIFT, ButtonState::Pressed).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Press & Release 'A'
+    portal.type_keyboard_keycode(keys::KEY_A).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Release Shift
+    portal.notify_keyboard_keycode(keys::KEY_LEFT_SHIFT, ButtonState::Released).await?;
+    info!("✅ Test 5 passed: Keyboard keycode + modifier completed");
+
+    // Test 6: Keyboard Keysym
+    info!("--- Test 6: Keyboard keysym injection ---");
+    // Keysym for 'w' (0x77), 'a' (0x61), 'r' (0x72), 'd' (0x64)
+    for keysym in [0x77, 0x61, 0x72, 0x64] {
+        portal.notify_keyboard_keysym(keysym, ButtonState::Pressed).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        portal.notify_keyboard_keysym(keysym, ButtonState::Released).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    info!("✅ Test 6 passed: Keyboard keysym injection completed");
+
+    // Step 7: Clean up
+    info!("Step 7: Closing RemoteDesktop portal session...");
+    portal.close().await?;
+    info!("✅ RemoteDesktop session closed cleanly");
+    info!("==================================================");
+    info!("🎉 Milestone 2: Remote Input Proof of Concept SUCCEEDED!");
+    info!("==================================================");
+
+    Ok(())
+}
+
 
 async fn run_screen_capture_poc() -> Result<()> {
     // Step 1: Connect to the ScreenCast portal

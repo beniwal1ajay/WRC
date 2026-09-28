@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::zvariant::OwnedValue;
 
 /// Response codes from the portal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,7 @@ pub fn generate_session_token() -> String {
 ///
 /// Portal methods return an object path for the Request.
 /// The actual result arrives as a `Response` signal on that path.
+#[allow(dead_code)]
 pub async fn wait_for_response(
     connection: &Connection,
     request_path: &str,

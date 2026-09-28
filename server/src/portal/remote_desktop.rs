@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 use anyhow::{Context, Result, bail};
-use tracing::{debug, info};
+use tracing::info;
 use zbus::Connection;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::zvariant::{OwnedObjectPath, Value};
 
 use super::screencast::{CaptureStream, CursorMode, SourceType, parse_streams};
 use super::session::{
@@ -47,6 +47,7 @@ pub struct RemoteDesktopPortal {
     streams: Vec<CaptureStream>,
 }
 
+#[allow(dead_code)]
 impl RemoteDesktopPortal {
     pub async fn new() -> Result<Self> {
         let connection = Connection::session()
@@ -169,7 +170,6 @@ impl RemoteDesktopPortal {
         options.insert("types", Value::from(source_type as u32));
         options.insert("cursor_mode", Value::from(cursor_mode as u32));
         options.insert("multiple", Value::from(false));
-        options.insert("persist_mode", Value::from(2u32));
 
         let _: OwnedObjectPath = proxy
             .call("SelectSources", &(session, options))
@@ -312,6 +312,22 @@ impl RemoteDesktopPortal {
         Ok(())
     }
 
+    /// Click a pointer button (press and release with short delay).
+    pub async fn click_pointer_button(&self, button: i32) -> Result<()> {
+        self.notify_pointer_button(button, ButtonState::Pressed).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        self.notify_pointer_button(button, ButtonState::Released).await?;
+        Ok(())
+    }
+
+    /// Type a keycode (press and release with short delay).
+    pub async fn type_keyboard_keycode(&self, keycode: i32) -> Result<()> {
+        self.notify_keyboard_keycode(keycode, ButtonState::Pressed).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        self.notify_keyboard_keycode(keycode, ButtonState::Released).await?;
+        Ok(())
+    }
+
     pub fn streams(&self) -> &[CaptureStream] {
         &self.streams
     }
@@ -331,7 +347,17 @@ impl RemoteDesktopPortal {
     }
 }
 
+/// Device types bitmask for SelectDevices.
+#[allow(dead_code)]
+pub mod device_types {
+    pub const KEYBOARD: u32 = 1;
+    pub const POINTER: u32 = 2;
+    pub const TOUCHSCREEN: u32 = 4;
+    pub const ALL: u32 = 7;
+}
+
 /// Common evdev button codes.
+#[allow(dead_code)]
 pub mod buttons {
     pub const BTN_LEFT: i32 = 272;
     pub const BTN_RIGHT: i32 = 273;
@@ -339,6 +365,7 @@ pub mod buttons {
 }
 
 /// Common evdev key codes.
+#[allow(dead_code)]
 pub mod keys {
     pub const KEY_ESC: i32 = 1;
     pub const KEY_ENTER: i32 = 28;

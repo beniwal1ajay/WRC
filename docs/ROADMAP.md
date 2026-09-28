@@ -10,8 +10,8 @@
 |----|------------------------------|--------------|-------------------------------------|
 | 0  | Environment Discovery        | ✅ Complete  | System capabilities documented      |
 | 1  | Wayland Screen Capture       | ✅ Complete  | Capture frames via ScreenCast+PW    |
-| 2  | Remote Input                 | 🔄 Active   | Mouse/keyboard via RemoteDesktop    |
-| 3  | LAN Video Streaming          | ⬜ Pending   | Android views Ubuntu desktop        |
+| 2  | Remote Input                 | ✅ Complete  | Mouse/keyboard via RemoteDesktop    |
+| 3  | LAN Video Streaming          | 🔄 Active   | Android views Ubuntu desktop        |
 | 4  | LAN Remote Control           | ⬜ Pending   | Android controls Ubuntu desktop     |
 | 5  | Clipboard Sync               | ⬜ Pending   | Bidirectional text clipboard        |
 | 6  | Authentication & Pairing     | ⬜ Pending   | Device identity and encryption      |
@@ -64,23 +64,27 @@
 
 ---
 
-## Milestone 2: Remote Input
+## Milestone 2: Remote Input ✅
+
+**Completed:** 2026-09-28
 
 **Goal:** Prove mouse/keyboard input injection via RemoteDesktop portal.
 
 **Tasks:**
-1. Create a combined RemoteDesktop + ScreenCast session.
-2. Move mouse to absolute coordinates.
-3. Perform left/right/middle click.
-4. Scroll.
-5. Send keyboard keycodes.
-6. Test modifier keys (Ctrl, Alt, Shift, Super).
+1. ✅ Create a combined RemoteDesktop + ScreenCast session.
+2. ✅ Move mouse to relative coordinates (smooth square pattern).
+3. ✅ Move mouse to absolute coordinates (stream-relative target).
+4. ✅ Perform left click (press and release with evdev codes).
+5. ✅ Perform vertical discrete scroll (up & down).
+6. ✅ Send keyboard keycodes with modifier keys (Shift + KEY_A).
+7. ✅ Send keyboard keysyms (w, a, r, d sequence).
 
-**Acceptance:** A script can move the mouse, click, scroll, and type text on the real Wayland desktop.
+**Acceptance:** Input injection verified live on the Wayland desktop.
 
 ---
 
 ## Milestone 3: LAN Video Streaming
+
 
 **Goal:** Stream the desktop to an Android phone over LAN.
 

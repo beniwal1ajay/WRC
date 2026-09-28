@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 /// A captured video frame.
 #[derive(Debug, Clone)]
@@ -29,6 +29,7 @@ pub struct CapturedFrame {
 
 /// Supported pixel formats from PipeWire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum FrameFormat {
     BGRx,
     RGBx,
@@ -38,6 +39,7 @@ pub enum FrameFormat {
     Unknown(u32),
 }
 
+#[allow(dead_code)]
 impl FrameFormat {
     pub fn bytes_per_pixel(&self) -> usize {
         match self {

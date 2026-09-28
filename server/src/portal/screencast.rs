@@ -19,6 +19,7 @@ use super::session::{
 /// Source types for screen capture.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum SourceType {
     Monitor = 1,
     Window = 2,
@@ -28,6 +29,7 @@ pub enum SourceType {
 /// Cursor modes for screen capture.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum CursorMode {
     Hidden = 1,
     Embedded = 2,
@@ -65,6 +67,7 @@ pub struct ScreenCastPortal {
     streams: Vec<CaptureStream>,
 }
 
+#[allow(dead_code)]
 impl ScreenCastPortal {
     pub async fn new() -> Result<Self> {
         let connection = Connection::session()
