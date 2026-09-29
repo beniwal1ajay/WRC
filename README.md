@@ -52,50 +52,51 @@ Android Phone ──── encrypted connection ──── Ubuntu Laptop
 
 - Android 8.0+ (API 26)
 
-## Quick Start
+## Quick Start & Deployment
 
-### 1. Install Dependencies
-
-```bash
-sudo apt install build-essential pkg-config libpipewire-0.3-dev \
-    libspa-0.2-dev libdbus-1-dev libssl-dev libclang-dev clang libva-dev
-```
-
-### 2. Build the Server
+### 1. Install & Run Server (Ubuntu Wayland)
 
 ```bash
-cd ward/server
-cargo build --release
+# Automated installer (builds release binary and installs systemd user service)
+bash scripts/install-server.sh
+
+# Start the background service
+systemctl --user start ward.service
+
+# Or run directly in a terminal
+ward-server stream
 ```
 
-### 3. Run
+### 2. Deploy Android Client
 
 ```bash
-./target/release/ward-server
+# Builds APK and installs to connected phone via ADB
+bash scripts/deploy-android.sh
 ```
 
-A screen sharing permission dialog will appear — grant access.
+### 3. Pair & Connect
 
-### 4. Connect from Android
-
-Install the WARD Android app, scan for devices on the LAN, and connect.
+Open the WARD app on Android and enter your Ubuntu host's IP (LAN or Tailscale VPN). A native desktop notification will pop up on your Ubuntu desktop displaying your 6-digit pairing PIN. Once paired, all future connections resume instantly.
 
 ## Project Structure
 
 ```
 ward/
-├── docs/           # Documentation
-├── server/         # Rust server
-├── android/        # Android client (Kotlin)
-├── protocol/       # Protocol specification
-├── scripts/        # Install/build scripts
-├── systemd/        # User service files
+├── docs/           # Documentation & guides
+├── server/         # Rust server (Wayland, PipeWire, TLS 1.3, STUN/TURN)
+├── android/        # Android client (Kotlin + Jetpack Compose)
+├── protocol/       # Binary protocol specification
+├── scripts/        # Deployment & installation scripts
+├── systemd/        # Systemd user service unit
 └── .github/        # CI configuration
 ```
 
 ## Documentation
 
+- [Production Deployment Guide](docs/DEPLOYMENT.md)
 - [Architecture Research](docs/ARCHITECTURE_RESEARCH.md)
+- [WAN Remote Architecture](docs/WAN_ARCHITECTURE.md)
+- [VPN Remote Setup Guide](docs/VPN_SETUP.md)
 - [Protocol Specification](protocol/PROTOCOL.md)
 - [Security Model](docs/SECURITY.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

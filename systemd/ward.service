@@ -1,0 +1,16 @@
+[Unit]
+Description=WARD - Wayland Android Remote Desktop Server
+Documentation=https://github.com/beniwal1ajay/WRC
+After=graphical-session.target pipewire.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ward-server stream
+Restart=on-failure
+RestartSec=3s
+Environment=RUST_BACKTRACE=1
+PassEnvironment=WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+
+[Install]
+WantedBy=graphical-session.target

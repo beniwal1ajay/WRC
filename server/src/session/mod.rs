@@ -103,7 +103,27 @@ pub async fn run_session(
                 info!("Client '{}' successfully authenticated via saved token", client_device_name);
             } else {
                 // Client is not yet paired: generate 6-digit PIN and challenge client
-                let (_pin, _token) = auth_mgr.generate_pairing_pin(&device_id_hex, &client_device_name);
+                let (pin, _token) = auth_mgr.generate_pairing_pin(&device_id_hex, &client_device_name);
+                info!("============================================================");
+                info!("🔑 NEW PAIRING REQUEST FROM: '{}'", client_device_name);
+                info!("🔑 DEVICE ID: {}", device_id_hex);
+                info!("🔑 PAIRING PIN: [{}]", pin);
+                info!("============================================================");
+
+                // Spawn non-blocking desktop notification
+                let dev_name = client_device_name.clone();
+                let pin_clone = pin.clone();
+                std::thread::spawn(move || {
+                    let _ = std::process::Command::new("notify-send")
+                        .arg("-u")
+                        .arg("critical")
+                        .arg("-a")
+                        .arg("WARD Remote Desktop")
+                        .arg(format!("Pairing PIN for {}", dev_name))
+                        .arg(format!("Enter PIN on Android: {}", pin_clone))
+                        .status();
+                });
+
                 let auth_req = Message::AuthRequest {
                     auth_method: crate::auth::AUTH_METHOD_PIN,
                     challenge: b"WARD_PIN_CHALLENGE".to_vec(),

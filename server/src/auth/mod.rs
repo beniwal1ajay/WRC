@@ -122,6 +122,15 @@ impl AuthManager {
         Self::save_store(&self.store_path, &self.store)
     }
 
+    /// List all currently authorized client devices.
+    pub fn list_authorized_clients(&self) -> Vec<(String, String, u64)> {
+        self.store
+            .clients
+            .iter()
+            .map(|(id, c)| (id.clone(), c.device_name.clone(), c.last_seen_at))
+            .collect()
+    }
+
     /// Retrieve any active pairing PIN pending for a device.
     pub fn get_pending_pin(device_id: &str) -> Option<String> {
         let lock = PENDING_PINS.lock().unwrap();
@@ -243,7 +252,7 @@ fn dirs_config_dir() -> Option<PathBuf> {
         })
 }
 
-fn current_timestamp() -> u64 {
+pub fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

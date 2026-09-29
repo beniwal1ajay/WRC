@@ -50,9 +50,88 @@ async fn main() -> Result<()> {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("stream");
+    let first_arg = args.get(1).map(|s| s.as_str()).unwrap_or("stream");
 
-    match mode {
+    match first_arg {
+        "-h" | "--help" | "help" => {
+            println!("WARD Server — Wayland Android Remote Desktop");
+            println!();
+            println!("USAGE:");
+            println!("    ward-server [COMMAND | OPTIONS]");
+            println!();
+            println!("COMMANDS:");
+            println!("    stream [PORT]        Start the TLS 1.3 streaming server (default, port 9740)");
+            println!("    status               Show server identity and authorized client devices");
+            println!("    devices              List all paired and authorized Android devices");
+            println!("    unpair <DEVICE_ID>   Revoke authorization for a client device");
+            println!("    capture              Run Milestone 1 screen capture test (saves PNG frames)");
+            println!("    input                Run Milestone 2 remote input injection test");
+            println!();
+            println!("OPTIONS:");
+            println!("    -p, --port <PORT>    Specify listening port for streaming server (default: 9740)");
+            println!("    -v, --version        Show WARD version");
+            println!("    -h, --help           Show this help message");
+            println!();
+            return Ok(());
+        }
+        "-v" | "--version" | "version" => {
+            println!("WARD Server v0.1.0");
+            println!("Wayland Android Remote Desktop");
+            return Ok(());
+        }
+        "--status" | "status" => {
+            let identity = ward_server::identity::HostIdentity::load_or_create(None)?;
+            let auth_mgr = ward_server::auth::AuthManager::load_default()?;
+            let clients = auth_mgr.list_authorized_clients();
+
+            println!("==================================================");
+            println!("   WARD Server Status & Identity                  ");
+            println!("==================================================");
+            println!("Host Device Name:   {}", identity.device_name);
+            println!("Host Device ID:     {}", identity.device_id);
+            println!("Host Public Key:    {}", identity.public_key_hex);
+            println!("Session Type:       {}", std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into()));
+            println!("Desktop:            {}", std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".into()));
+            println!("Default Port:       {}", DEFAULT_PORT);
+            println!("Authorized Devices: {}", clients.len());
+            println!("--------------------------------------------------");
+            if clients.is_empty() {
+                println!("No devices paired yet. Connect from Android to pair with 6-digit PIN.");
+            } else {
+                for (id, name, last_seen) in clients {
+                    println!("• Device: {:<20} ID: {} (Last active: {}s ago)", name, id, ward_server::auth::current_timestamp().saturating_sub(last_seen));
+                }
+            }
+            println!("==================================================");
+            return Ok(());
+        }
+        "--devices" | "devices" | "--list-devices" => {
+            let auth_mgr = ward_server::auth::AuthManager::load_default()?;
+            let clients = auth_mgr.list_authorized_clients();
+            println!("Authorized WARD Devices (Total: {}):", clients.len());
+            for (id, name, last_seen) in clients {
+                println!("- Name: {}\n  Device ID: {}\n  Last active timestamp: {} s", name, id, last_seen);
+            }
+            return Ok(());
+        }
+        "--unpair" | "unpair" => {
+            let dev_id = match args.get(2) {
+                Some(id) if !id.is_empty() => id,
+                _ => {
+                    eprintln!("Error: Missing DEVICE_ID argument.");
+                    eprintln!("Usage: ward-server unpair <DEVICE_ID>");
+                    std::process::exit(1);
+                }
+            };
+            let mut auth_mgr = ward_server::auth::AuthManager::load_default()?;
+            if auth_mgr.is_authorized(dev_id) {
+                auth_mgr.remove_authorized_client(dev_id)?;
+                println!("✅ Successfully unpaired device: {}", dev_id);
+            } else {
+                println!("Device ID '{}' was not found in authorized clients list.", dev_id);
+            }
+            return Ok(());
+        }
         "capture" | "--capture" => {
             info!("Mode: Milestone 1 — Screen Capture Proof");
             match run_screen_capture_poc().await {
@@ -79,12 +158,19 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        "stream" | "--stream" | "server" | "--server" | _ => {
-            info!("Mode: Milestone 3 — TLS 1.3 Streaming Server");
-            let port = args.get(2)
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(DEFAULT_PORT);
+        _ => {
+            // Determine port from args if given (e.g. `ward-server --port 9740` or `ward-server stream 9740` or `ward-server 9740`)
+            let port = if first_arg == "-p" || first_arg == "--port" {
+                args.get(2).and_then(|p| p.parse::<u16>().ok()).unwrap_or(DEFAULT_PORT)
+            } else if let Ok(p) = first_arg.parse::<u16>() {
+                p
+            } else {
+                args.get(2)
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .unwrap_or(DEFAULT_PORT)
+            };
 
+            info!("Mode: TLS 1.3 Streaming Server (Port: {})", port);
             match run_streaming_server(port).await {
                 Ok(()) => {
                     info!("Streaming server shut down cleanly");
