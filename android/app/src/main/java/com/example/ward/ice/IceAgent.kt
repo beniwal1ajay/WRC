@@ -3,6 +3,9 @@ package com.example.ward.ice
 import android.util.Log
 import com.example.ward.protocol.IceCandidate
 import com.example.ward.stun.StunClient
+import com.example.ward.turn.TurnAllocation
+import com.example.ward.turn.TurnClient
+import com.example.ward.turn.TurnConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.DatagramPacket
@@ -50,17 +53,19 @@ class IceAgent(
 ) {
     val localCandidates = ArrayList<IceCandidate>()
     val remoteCandidates = ArrayList<IceCandidate>()
+    var turnAllocation: TurnAllocation? = null
     private val random = SecureRandom()
 
     val localPort: Int
         get() = socket.localPort
 
     /**
-     * Gather local host and srflx candidates.
+     * Gather local host, srflx, and relay candidates.
      */
     fun gatherCandidates(
         stunServerHost: String = "stun.l.google.com",
-        stunServerPort: Int = 19302
+        stunServerPort: Int = 19302,
+        turnConfig: TurnConfig? = null
     ): List<IceCandidate> {
         val candidates = ArrayList<IceCandidate>()
 
@@ -147,6 +152,29 @@ class IceAgent(
             Log.d(TAG, "Srflx gathering failed: ${e.message}")
         }
 
+        // 3. Relay candidate via TURN
+        if (turnConfig != null) {
+            try {
+                val client = TurnClient(socket)
+                val alloc = client.allocate(turnConfig)
+                if (alloc != null) {
+                    turnAllocation = alloc
+                    val priority = calculateCandidatePriority(CANDIDATE_TYPE_RELAY, 65535, 1)
+                    val relayCand = IceCandidate(
+                        candidateType = CANDIDATE_TYPE_RELAY,
+                        protocol = PROTOCOL_UDP,
+                        ip = alloc.relayedIp,
+                        port = alloc.relayedPort,
+                        priority = priority
+                    )
+                    candidates.add(relayCand)
+                    Log.i(TAG, "Gathered Relay candidate: ${alloc.relayedIp}:${alloc.relayedPort}")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Relay candidate gathering failed: ${e.message}")
+            }
+        }
+
         localCandidates.clear()
         localCandidates.addAll(candidates)
         return candidates
@@ -154,9 +182,10 @@ class IceAgent(
 
     suspend fun gatherCandidatesAsync(
         stunServerHost: String = "stun.l.google.com",
-        stunServerPort: Int = 19302
+        stunServerPort: Int = 19302,
+        turnConfig: TurnConfig? = null
     ): List<IceCandidate> = withContext(Dispatchers.IO) {
-        gatherCandidates(stunServerHost, stunServerPort)
+        gatherCandidates(stunServerHost, stunServerPort, turnConfig)
     }
 
     fun setRemoteCandidates(candidates: List<IceCandidate>) {

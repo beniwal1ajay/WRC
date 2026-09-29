@@ -57,6 +57,7 @@ pub struct IceAgent {
     pub local_candidates: Vec<IceCandidate>,
     pub remote_candidates: Vec<IceCandidate>,
     pub is_controlling: bool,
+    pub turn_allocation: Option<crate::turn::TurnAllocation>,
 }
 
 impl IceAgent {
@@ -67,6 +68,7 @@ impl IceAgent {
             local_candidates: Vec::new(),
             remote_candidates: Vec::new(),
             is_controlling,
+            turn_allocation: None,
         }
     }
 
@@ -85,7 +87,12 @@ impl IceAgent {
     /// Gather local candidates:
     /// 1. Host candidates from local network interfaces.
     /// 2. Server reflexive (srflx) candidate via public STUN query on the same socket.
-    pub async fn gather_candidates(&mut self, stun_server: Option<&str>) -> Result<Vec<IceCandidate>> {
+    /// 3. Relay candidate via TURN allocation (if configured).
+    pub async fn gather_candidates(
+        &mut self,
+        stun_server: Option<&str>,
+        turn_config: Option<&crate::turn::TurnConfig>,
+    ) -> Result<Vec<IceCandidate>> {
         let mut candidates = Vec::new();
         let local_port = self.local_addr()?.port();
 
@@ -138,6 +145,28 @@ impl IceAgent {
             }
             Err(e) => {
                 warn!("ICE srflx candidate gathering failed via {}: {}", stun_target, e);
+            }
+        }
+
+        // 3. Relay candidate via TURN
+        if let Some(config) = turn_config {
+            let turn_client = crate::turn::TurnClient::new(self.socket.clone());
+            match turn_client.allocate(config).await {
+                Ok(allocation) => {
+                    info!("ICE gathered Relay candidate: {}", allocation.relayed_addr);
+                    let priority = calculate_candidate_priority(CANDIDATE_TYPE_RELAY, 65535, 1);
+                    candidates.push(IceCandidate {
+                        candidate_type: CANDIDATE_TYPE_RELAY,
+                        protocol: PROTOCOL_UDP,
+                        ip: allocation.relayed_addr.ip().to_string(),
+                        port: allocation.relayed_addr.port(),
+                        priority,
+                    });
+                    self.turn_allocation = Some(allocation);
+                }
+                Err(e) => {
+                    warn!("ICE relay candidate gathering failed via {}: {}", config.server, e);
+                }
             }
         }
 
