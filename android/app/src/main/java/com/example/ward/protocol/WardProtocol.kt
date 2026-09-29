@@ -30,6 +30,7 @@ enum class MessageType(val code: Short) {
     PING(0x0050),
     PONG(0x0051),
     STATS(0x0060),
+    CANDIDATE_EXCHANGE(0x0070),
     DISCONNECT(0x00F0.toShort()),
     ERROR(0x00FF.toShort());
 
@@ -357,10 +358,62 @@ sealed class WardMessage(val type: MessageType) {
         override fun serialize(): ByteArray = ByteArray(0)
     }
 
+    data class CandidateExchange(
+        val candidates: List<IceCandidate>
+    ) : WardMessage(MessageType.CANDIDATE_EXCHANGE) {
+        override fun serialize(): ByteArray {
+            var size = 2
+            for (c in candidates) {
+                val ipBytes = c.ip.toByteArray(Charsets.UTF_8)
+                size += 1 + 1 + 2 + ipBytes.size + 2 + 4
+            }
+            val buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN)
+            buf.putShort(candidates.size.toShort())
+            for (c in candidates) {
+                buf.put(c.candidateType)
+                buf.put(c.protocol)
+                val ipBytes = c.ip.toByteArray(Charsets.UTF_8)
+                buf.putShort(ipBytes.size.toShort())
+                buf.put(ipBytes)
+                buf.putShort(c.port.toShort())
+                buf.putInt(c.priority.toInt())
+            }
+            return buf.array()
+        }
+
+        companion object {
+            fun parse(payload: ByteArray): CandidateExchange {
+                val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+                val count = buf.short.toInt() and 0xFFFF
+                val list = ArrayList<IceCandidate>(count)
+                for (i in 0 until count) {
+                    val candidateType = buf.get()
+                    val protocol = buf.get()
+                    val ipLen = buf.short.toInt() and 0xFFFF
+                    val ipBytes = ByteArray(ipLen)
+                    buf.get(ipBytes)
+                    val ip = String(ipBytes, Charsets.UTF_8)
+                    val port = buf.short.toInt() and 0xFFFF
+                    val priority = buf.int.toLong() and 0xFFFFFFFFL
+                    list.add(IceCandidate(candidateType, protocol, ip, port, priority))
+                }
+                return CandidateExchange(list)
+            }
+        }
+    }
+
     object Disconnect : WardMessage(MessageType.DISCONNECT) {
         override fun serialize(): ByteArray = ByteArray(0)
     }
 }
+
+data class IceCandidate(
+    val candidateType: Byte, // 1 = Host, 2 = Srflx, 3 = Relay
+    val protocol: Byte,      // 1 = UDP, 2 = TCP
+    val ip: String,
+    val port: Int,
+    val priority: Long
+)
 
 fun writeMessage(out: OutputStream, msg: WardMessage, sequence: Int) {
     val payload = msg.serialize()

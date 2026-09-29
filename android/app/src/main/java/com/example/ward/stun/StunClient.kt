@@ -45,6 +45,46 @@ object StunClient {
         return buf.array()
     }
 
+    fun createBindingResponse(transactionId: ByteArray, ip: String, port: Int): ByteArray {
+        val inetAddr = InetAddress.getByName(ip)
+        val ipBytes = inetAddr.address
+        val isV6 = ipBytes.size == 16
+
+        val attrLen = if (isV6) 20 else 8
+        val msgLen = attrLen + 4 // attribute header is 4 bytes
+
+        val buf = ByteBuffer.allocate(20 + 4 + attrLen).order(ByteOrder.BIG_ENDIAN)
+        buf.putShort(BINDING_RESPONSE)
+        buf.putShort(msgLen.toShort())
+        buf.putInt(STUN_MAGIC_COOKIE)
+        buf.put(transactionId)
+
+        // XOR-MAPPED-ADDRESS
+        buf.putShort(ATTR_XOR_MAPPED_ADDRESS)
+        buf.putShort(attrLen.toShort())
+        buf.put(0.toByte()) // reserved
+        buf.put((if (isV6) 0x02 else 0x01).toByte()) // family
+
+        val xPort = port xor ((STUN_MAGIC_COOKIE ushr 16) and 0xFFFF)
+        buf.putShort(xPort.toShort())
+
+        if (isV6) {
+            val mask = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN)
+            mask.putInt(STUN_MAGIC_COOKIE)
+            mask.put(transactionId)
+            val maskBytes = mask.array()
+            for (i in 0 until 16) {
+                buf.put((ipBytes[i].toInt() xor maskBytes[i].toInt()).toByte())
+            }
+        } else {
+            val ipInt = ByteBuffer.wrap(ipBytes).int
+            val xIp = ipInt xor STUN_MAGIC_COOKIE
+            buf.putInt(xIp)
+        }
+
+        return buf.array()
+    }
+
     fun parseBindingResponse(data: ByteArray, expectedTid: ByteArray): Pair<String, Int>? {
         if (data.size < 20) return null
 

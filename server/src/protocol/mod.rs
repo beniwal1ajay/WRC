@@ -35,6 +35,7 @@ pub enum MessageType {
     Ping = 0x0050,
     Pong = 0x0051,
     Stats = 0x0060,
+    CandidateExchange = 0x0070,
     Disconnect = 0x00F0,
     Error = 0x00FF,
 }
@@ -62,6 +63,7 @@ impl MessageType {
             0x0050 => Some(Self::Ping),
             0x0051 => Some(Self::Pong),
             0x0060 => Some(Self::Stats),
+            0x0070 => Some(Self::CandidateExchange),
             0x00F0 => Some(Self::Disconnect),
             0x00FF => Some(Self::Error),
             _ => None,
@@ -132,6 +134,16 @@ impl Header {
             sequence,
         })
     }
+}
+
+/// ICE candidate for peer-to-peer connectivity establishment.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IceCandidate {
+    pub candidate_type: u8, // 1 = Host, 2 = ServerReflexive, 3 = Relay
+    pub protocol: u8,       // 1 = UDP, 2 = TCP
+    pub ip: String,
+    pub port: u16,
+    pub priority: u32,
 }
 
 /// Strongly typed protocol messages.
@@ -214,6 +226,9 @@ pub enum Message {
         encode_ms: u16,
         latency_ms: u16,
     },
+    CandidateExchange {
+        candidates: Vec<IceCandidate>,
+    },
     Disconnect,
     Error {
         code: u32,
@@ -244,6 +259,7 @@ impl Message {
             Self::Ping { .. } => MessageType::Ping,
             Self::Pong { .. } => MessageType::Pong,
             Self::Stats { .. } => MessageType::Stats,
+            Self::CandidateExchange { .. } => MessageType::CandidateExchange,
             Self::Disconnect => MessageType::Disconnect,
             Self::Error { .. } => MessageType::Error,
         }
@@ -325,6 +341,18 @@ impl Message {
                 buf.extend_from_slice(&bitrate_kbps.to_be_bytes());
                 buf.extend_from_slice(&encode_ms.to_be_bytes());
                 buf.extend_from_slice(&latency_ms.to_be_bytes());
+            }
+            Self::CandidateExchange { candidates } => {
+                buf.extend_from_slice(&(candidates.len() as u16).to_be_bytes());
+                for c in candidates {
+                    buf.push(c.candidate_type);
+                    buf.push(c.protocol);
+                    let ip_bytes = c.ip.as_bytes();
+                    buf.extend_from_slice(&(ip_bytes.len() as u16).to_be_bytes());
+                    buf.extend_from_slice(ip_bytes);
+                    buf.extend_from_slice(&c.port.to_be_bytes());
+                    buf.extend_from_slice(&c.priority.to_be_bytes());
+                }
             }
             Self::Disconnect => {}
             Self::Error { code, message } => {
@@ -555,6 +583,45 @@ impl Message {
 
                 Ok(Self::Stats { fps, bitrate_kbps, encode_ms, latency_ms })
             }
+            MessageType::CandidateExchange => {
+                let mut u16_buf = [0u8; 2];
+                cur.read_exact(&mut u16_buf)?;
+                let count = u16::from_be_bytes(u16_buf) as usize;
+
+                let mut candidates = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let mut u8_buf = [0u8; 1];
+                    cur.read_exact(&mut u8_buf)?;
+                    let candidate_type = u8_buf[0];
+
+                    cur.read_exact(&mut u8_buf)?;
+                    let protocol = u8_buf[0];
+
+                    cur.read_exact(&mut u16_buf)?;
+                    let ip_len = u16::from_be_bytes(u16_buf) as usize;
+                    let mut ip_buf = vec![0u8; ip_len];
+                    cur.read_exact(&mut ip_buf)?;
+                    let ip = String::from_utf8(ip_buf)
+                        .context("Invalid UTF-8 in candidate IP")?;
+
+                    cur.read_exact(&mut u16_buf)?;
+                    let port = u16::from_be_bytes(u16_buf);
+
+                    let mut u32_buf = [0u8; 4];
+                    cur.read_exact(&mut u32_buf)?;
+                    let priority = u32::from_be_bytes(u32_buf);
+
+                    candidates.push(IceCandidate {
+                        candidate_type,
+                        protocol,
+                        ip,
+                        port,
+                        priority,
+                    });
+                }
+
+                Ok(Self::CandidateExchange { candidates })
+            }
             MessageType::Disconnect => Ok(Self::Disconnect),
             MessageType::Error => {
                 let mut u32_buf = [0u8; 4];
@@ -711,6 +778,31 @@ mod tests {
             bitrate_kbps: 4500,
             encode_ms: 3,
             latency_ms: 12,
+        };
+        let payload = msg.serialize_payload();
+        let parsed = Message::deserialize_payload(msg.msg_type(), &payload).unwrap();
+        assert_eq!(msg, parsed);
+    }
+
+    #[test]
+    fn test_candidate_exchange_roundtrip() {
+        let msg = Message::CandidateExchange {
+            candidates: vec![
+                IceCandidate {
+                    candidate_type: 1, // Host
+                    protocol: 1,       // UDP
+                    ip: "192.168.1.100".to_string(),
+                    port: 51820,
+                    priority: 2130706431,
+                },
+                IceCandidate {
+                    candidate_type: 2, // Srflx
+                    protocol: 1,       // UDP
+                    ip: "203.0.113.50".to_string(),
+                    port: 62411,
+                    priority: 1694498815,
+                },
+            ],
         };
         let payload = msg.serialize_payload();
         let parsed = Message::deserialize_payload(msg.msg_type(), &payload).unwrap();

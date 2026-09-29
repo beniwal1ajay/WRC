@@ -152,4 +152,31 @@ class WardProtocolTest {
         assertEquals(1, header.sequence)
         assertEquals(8, payload.size)
     }
+
+    @Test
+    fun testCandidateExchangeRoundtrip() {
+        val candidates = listOf(
+            IceCandidate(
+                candidateType = 1,
+                protocol = 1,
+                ip = "192.168.1.50",
+                port = 45123,
+                priority = 2130706431L
+            ),
+            IceCandidate(
+                candidateType = 2,
+                protocol = 1,
+                ip = "203.0.113.88",
+                port = 59124,
+                priority = 1694498815L
+            )
+        )
+        val original = WardMessage.CandidateExchange(candidates)
+        val serialized = original.serialize()
+        val parsed = WardMessage.CandidateExchange.parse(serialized)
+
+        assertEquals(2, parsed.candidates.size)
+        assertEquals(candidates[0], parsed.candidates[0])
+        assertEquals(candidates[1], parsed.candidates[1])
+    }
 }

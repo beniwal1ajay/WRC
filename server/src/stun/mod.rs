@@ -48,6 +48,54 @@ pub fn create_binding_request(transaction_id: &[u8; 12]) -> [u8; 20] {
     buf
 }
 
+/// Create an RFC 5389 STUN Binding Response packet containing XOR-MAPPED-ADDRESS.
+pub fn create_binding_response(transaction_id: &[u8; 12], peer_addr: SocketAddr) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(36);
+    buf.extend_from_slice(&BINDING_RESPONSE.to_be_bytes());
+
+    match peer_addr {
+        SocketAddr::V4(addr4) => {
+            // Attribute length: 8 bytes for XOR-MAPPED-ADDRESS IPv4, plus 4 bytes attribute header = 12 bytes total msg length
+            buf.extend_from_slice(&12u16.to_be_bytes());
+            buf.extend_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+            buf.extend_from_slice(transaction_id);
+
+            // Attribute: XOR-MAPPED-ADDRESS
+            buf.extend_from_slice(&ATTR_XOR_MAPPED_ADDRESS.to_be_bytes());
+            buf.extend_from_slice(&8u16.to_be_bytes());
+            buf.push(0x00); // reserved
+            buf.push(0x01); // family IPv4
+            let x_port = addr4.port() ^ (STUN_MAGIC_COOKIE >> 16) as u16;
+            buf.extend_from_slice(&x_port.to_be_bytes());
+            let ip_u32 = u32::from(*addr4.ip());
+            let x_ip = ip_u32 ^ STUN_MAGIC_COOKIE;
+            buf.extend_from_slice(&x_ip.to_be_bytes());
+        }
+        SocketAddr::V6(addr6) => {
+            // Attribute length: 20 bytes for XOR-MAPPED-ADDRESS IPv6, plus 4 bytes attribute header = 24 bytes total msg length
+            buf.extend_from_slice(&24u16.to_be_bytes());
+            buf.extend_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+            buf.extend_from_slice(transaction_id);
+
+            // Attribute: XOR-MAPPED-ADDRESS
+            buf.extend_from_slice(&ATTR_XOR_MAPPED_ADDRESS.to_be_bytes());
+            buf.extend_from_slice(&20u16.to_be_bytes());
+            buf.push(0x00); // reserved
+            buf.push(0x02); // family IPv6
+            let x_port = addr6.port() ^ (STUN_MAGIC_COOKIE >> 16) as u16;
+            buf.extend_from_slice(&x_port.to_be_bytes());
+            let mut xor_mask = [0u8; 16];
+            xor_mask[0..4].copy_from_slice(&STUN_MAGIC_COOKIE.to_be_bytes());
+            xor_mask[4..16].copy_from_slice(transaction_id);
+            let octets = addr6.ip().octets();
+            for i in 0..16 {
+                buf.push(octets[i] ^ xor_mask[i]);
+            }
+        }
+    }
+    buf
+}
+
 /// Parse an RFC 5389 / RFC 8489 STUN Binding Response and extract public mapped address.
 pub fn parse_binding_response(data: &[u8], expected_tid: &[u8; 12]) -> Result<SocketAddr> {
     if data.len() < 20 {
@@ -247,5 +295,19 @@ mod tests {
         let parsed = parse_binding_response(&resp, &tid).expect("Failed to parse XOR-MAPPED-ADDRESS");
         assert_eq!(parsed.port(), 54321);
         assert_eq!(parsed.ip(), IpAddr::V4(Ipv4Addr::new(198, 51, 100, 42)));
+    }
+
+    #[test]
+    fn test_create_and_parse_binding_response_roundtrip() {
+        let tid = [0x55; 12];
+        let addr: SocketAddr = "192.0.2.146:49152".parse().unwrap();
+        let resp = create_binding_response(&tid, addr);
+        let parsed = parse_binding_response(&resp, &tid).expect("Failed to parse roundtrip response");
+        assert_eq!(parsed, addr);
+
+        let v6_addr: SocketAddr = "[2001:db8::1]:51820".parse().unwrap();
+        let v6_resp = create_binding_response(&tid, v6_addr);
+        let v6_parsed = parse_binding_response(&v6_resp, &tid).expect("Failed to parse IPv6 roundtrip response");
+        assert_eq!(v6_parsed, v6_addr);
     }
 }
