@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 pub const PROTOCOL_MAGIC: u8 = 0x57; // 'W'
 pub const PROTOCOL_VERSION: u8 = 0x01;
 pub const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16 MB
+pub const MAX_CONTROL_PAYLOAD_SIZE: usize = 64 * 1024; // 64 KB
 
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +123,17 @@ impl Header {
         let payload_len = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         if (payload_len as usize) > MAX_PAYLOAD_SIZE {
             bail!("Payload length {} exceeds maximum {}", payload_len, MAX_PAYLOAD_SIZE);
+        }
+
+        if msg_type != MessageType::VideoFrame && msg_type != MessageType::VideoKeyframe {
+            if (payload_len as usize) > MAX_CONTROL_PAYLOAD_SIZE {
+                bail!(
+                    "Control message {:?} payload length {} exceeds maximum {}",
+                    msg_type,
+                    payload_len,
+                    MAX_CONTROL_PAYLOAD_SIZE
+                );
+            }
         }
 
         let sequence = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
@@ -822,4 +834,41 @@ mod tests {
         assert_eq!(header.msg_type, MessageType::MouseMove);
         assert_eq!(msg, received);
     }
+
+    #[test]
+    fn test_header_payload_size_security_limits() {
+        // Control message with excessive payload length (> 64KB) must be rejected
+        let mut bad_control_buf = [0u8; Header::SIZE];
+        bad_control_buf[0] = PROTOCOL_MAGIC;
+        bad_control_buf[1] = PROTOCOL_VERSION;
+        bad_control_buf[2..4].copy_from_slice(&(MessageType::Ping as u16).to_be_bytes());
+        bad_control_buf[4..8].copy_from_slice(&(65537u32).to_be_bytes()); // 64KB + 1 byte
+        bad_control_buf[8..12].copy_from_slice(&1u32.to_be_bytes());
+
+        let res = Header::deserialize(&bad_control_buf);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("exceeds maximum"));
+
+        // Video frame with 1MB payload should be permitted
+        let mut valid_video_buf = [0u8; Header::SIZE];
+        valid_video_buf[0] = PROTOCOL_MAGIC;
+        valid_video_buf[1] = PROTOCOL_VERSION;
+        valid_video_buf[2..4].copy_from_slice(&(MessageType::VideoFrame as u16).to_be_bytes());
+        valid_video_buf[4..8].copy_from_slice(&(1024 * 1024u32).to_be_bytes()); // 1 MB
+        valid_video_buf[8..12].copy_from_slice(&2u32.to_be_bytes());
+
+        let res_video = Header::deserialize(&valid_video_buf);
+        assert!(res_video.is_ok());
+
+        // Video frame exceeding 16MB must be rejected
+        let mut bad_video_buf = [0u8; Header::SIZE];
+        bad_video_buf[0] = PROTOCOL_MAGIC;
+        bad_video_buf[1] = PROTOCOL_VERSION;
+        bad_video_buf[2..4].copy_from_slice(&(MessageType::VideoFrame as u16).to_be_bytes());
+        bad_video_buf[4..8].copy_from_slice(&(17 * 1024 * 1024u32).to_be_bytes()); // 17 MB
+
+        let res_too_large = Header::deserialize(&bad_video_buf);
+        assert!(res_too_large.is_err());
+    }
 }
+

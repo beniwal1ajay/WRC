@@ -113,7 +113,7 @@ pub fn parse_binding_response(data: &[u8], expected_tid: &[u8; 12]) -> Result<So
     }
 
     let tid = &data[8..20];
-    if tid != expected_tid {
+    if !bool::from(subtle::ConstantTimeEq::ct_eq(tid, expected_tid)) {
         bail!("STUN transaction ID mismatch");
     }
 

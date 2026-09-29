@@ -8,6 +8,8 @@ import java.nio.ByteOrder
 const val PROTOCOL_MAGIC: Byte = 0x57 // 'W'
 const val PROTOCOL_VERSION: Byte = 0x01
 const val HEADER_SIZE = 12
+const val MAX_PAYLOAD_SIZE = 16 * 1024 * 1024 // 16 MB
+const val MAX_CONTROL_PAYLOAD_SIZE = 64 * 1024 // 64 KB
 
 enum class MessageType(val code: Short) {
     CONNECTION_INIT(0x0001),
@@ -67,6 +69,12 @@ data class Header(
             val typeCode = buf.short
             val type = MessageType.fromCode(typeCode) ?: throw IllegalArgumentException("Unknown msg type: $typeCode")
             val payloadLen = buf.int
+            require(payloadLen in 0..MAX_PAYLOAD_SIZE) { "Payload len $payloadLen exceeds maximum $MAX_PAYLOAD_SIZE" }
+            if (type != MessageType.VIDEO_FRAME && type != MessageType.VIDEO_KEYFRAME) {
+                require(payloadLen <= MAX_CONTROL_PAYLOAD_SIZE) {
+                    "Control message $type payload len $payloadLen exceeds maximum $MAX_CONTROL_PAYLOAD_SIZE"
+                }
+            }
             val sequence = buf.int
             return Header(magic, version, type, payloadLen, sequence)
         }
@@ -496,6 +504,7 @@ fun readHeader(input: InputStream): Header {
 }
 
 fun readPayload(input: InputStream, len: Int): ByteArray {
+    require(len in 0..MAX_PAYLOAD_SIZE) { "Payload length $len out of bounds (max $MAX_PAYLOAD_SIZE)" }
     val buf = ByteArray(len)
     var read = 0
     while (read < len) {
@@ -505,3 +514,21 @@ fun readPayload(input: InputStream, len: Int): ByteArray {
     }
     return buf
 }
+
+/**
+ * Constant-time byte array comparison preventing timing side-channel attacks.
+ */
+fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
+    return java.security.MessageDigest.isEqual(a, b)
+}
+
+/**
+ * Constant-time string comparison preventing timing side-channel attacks.
+ */
+fun constantTimeEquals(a: String, b: String): Boolean {
+    return java.security.MessageDigest.isEqual(
+        a.toByteArray(Charsets.UTF_8),
+        b.toByteArray(Charsets.UTF_8)
+    )
+}
+

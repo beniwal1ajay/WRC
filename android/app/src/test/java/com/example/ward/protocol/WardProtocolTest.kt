@@ -4,6 +4,8 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class WardProtocolTest {
 
@@ -219,4 +221,60 @@ class WardProtocolTest {
         val parsed = WardMessage.Pong.parse(serialized)
         assertEquals(nowNs, parsed.timestampNs)
     }
+
+    @Test
+    fun testConstantTimeEquals() {
+        val a = "secr3t_t0k3n_v4lu3"
+        val b = "secr3t_t0k3n_v4lu3"
+        val c = "secr3t_t0k3n_v4lu4"
+        val d = "short"
+
+        assertTrue(constantTimeEquals(a, b))
+        assertFalse(constantTimeEquals(a, c))
+        assertFalse(constantTimeEquals(a, d))
+        assertTrue(constantTimeEquals(ByteArray(16) { 5 }, ByteArray(16) { 5 }))
+        assertFalse(constantTimeEquals(ByteArray(16) { 5 }, ByteArray(16) { 6 }))
+    }
+
+    @Test
+    fun testHeaderPayloadSecurityLimits() {
+        // Control message with > 64KB payload must be rejected
+        val badControlBuf = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
+            .put(PROTOCOL_MAGIC)
+            .put(PROTOCOL_VERSION)
+            .putShort(MessageType.PING.code)
+            .putInt(65536 + 1)
+            .putInt(1)
+            .array()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            Header.fromByteArray(badControlBuf)
+        }
+
+        // Negative payload length must be rejected
+        val negativeBuf = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
+            .put(PROTOCOL_MAGIC)
+            .put(PROTOCOL_VERSION)
+            .putShort(MessageType.VIDEO_FRAME.code)
+            .putInt(-1)
+            .putInt(1)
+            .array()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            Header.fromByteArray(negativeBuf)
+        }
+
+        // Video payload within 16MB must be accepted
+        val validVideoBuf = ByteBuffer.allocate(HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
+            .put(PROTOCOL_MAGIC)
+            .put(PROTOCOL_VERSION)
+            .putShort(MessageType.VIDEO_FRAME.code)
+            .putInt(1024 * 1024)
+            .putInt(2)
+            .array()
+
+        val header = Header.fromByteArray(validVideoBuf)
+        assertEquals(1024 * 1024, header.payloadLen)
+    }
 }
+

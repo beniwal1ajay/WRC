@@ -173,7 +173,7 @@ pub fn verify_message_integrity(data: &[u8], key: &[u8; 16]) -> Result<bool> {
             let hmac_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
             let computed = ring::hmac::sign(&hmac_key, &sub_msg);
 
-            return Ok(computed.as_ref() == received_mi);
+            return Ok(subtle::ConstantTimeEq::ct_eq(computed.as_ref(), received_mi).into());
         }
 
         offset = (attr_end + 3) & !3;

@@ -118,13 +118,14 @@ impl HostIdentity {
         let stored: StoredIdentity = serde_json::from_str(&content)
             .context("Failed to deserialize identity JSON")?;
 
-        let secret_bytes_vec = hex_decode(&stored.secret_key_hex)?;
+        let mut secret_bytes_vec = hex_decode(&stored.secret_key_hex)?;
         if secret_bytes_vec.len() != 32 {
             bail!("Invalid secret key length: expected 32 bytes, got {}", secret_bytes_vec.len());
         }
 
         let mut secret_key_bytes = [0u8; 32];
         secret_key_bytes.copy_from_slice(&secret_bytes_vec);
+        secret_bytes_vec.fill(0); // Zeroize intermediate decoded key buffer
 
         // Verify keypair integrity
         let signing_key = SigningKey::from_bytes(&secret_key_bytes);
@@ -167,6 +168,15 @@ impl HostIdentity {
         fs::set_permissions(path, perms)?;
 
         Ok(())
+    }
+}
+
+impl Drop for HostIdentity {
+    fn drop(&mut self) {
+        // Explicitly overwrite secret key bytes in memory upon drop
+        for b in self.secret_key_bytes.iter_mut() {
+            *b = 0;
+        }
     }
 }
 

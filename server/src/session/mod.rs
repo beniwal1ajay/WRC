@@ -159,7 +159,7 @@ pub async fn run_session(
     let accepted = Message::SessionAccepted {
         session_id: 1,
         server_device_id: host_identity.public_key_bytes(),
-        server_device_name: host_identity.device_name,
+        server_device_name: host_identity.device_name.clone(),
     };
     let seq = sequence.fetch_add(1, Ordering::Relaxed);
     protocol::write_message(&mut writer, &accepted, seq).await
