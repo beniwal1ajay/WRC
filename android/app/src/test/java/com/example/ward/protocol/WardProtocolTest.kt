@@ -66,6 +66,39 @@ class WardProtocolTest {
     }
 
     @Test
+    fun testAuthRequestRoundtrip() {
+        val challenge = "CHALLENGE_DATA_123".toByteArray(Charsets.UTF_8)
+        val original = WardMessage.AuthRequest(authMethod = 1, challenge = challenge)
+        val serialized = original.serialize()
+        assertEquals(2 + 2 + challenge.size, serialized.size)
+
+        val parsed = WardMessage.AuthRequest.parse(serialized)
+        assertEquals(1.toShort(), parsed.authMethod)
+        assertArrayEquals(challenge, parsed.challenge)
+    }
+
+    @Test
+    fun testAuthResponseRoundtrip() {
+        val pin = "849201".toByteArray(Charsets.UTF_8)
+        val original = WardMessage.AuthResponse(authMethod = 1, response = pin)
+        val serialized = original.serialize()
+        assertEquals(2 + 2 + pin.size, serialized.size)
+
+        val parsed = WardMessage.AuthResponse.parse(serialized)
+        assertEquals(1.toShort(), parsed.authMethod)
+        assertArrayEquals(pin, parsed.response)
+    }
+
+    @Test
+    fun testSessionRejectedRoundtrip() {
+        val original = WardMessage.SessionRejected(reasonCode = 0x01, reasonMessage = "Invalid PIN")
+        val serialized = original.serialize()
+        val parsed = WardMessage.SessionRejected.parse(serialized)
+        assertEquals(0x01, parsed.reasonCode)
+        assertEquals("Invalid PIN", parsed.reasonMessage)
+    }
+
+    @Test
     fun testVideoConfigParse() {
         val config = WardMessage.VideoConfig(
             width = 1920,

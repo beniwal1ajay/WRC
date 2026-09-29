@@ -33,7 +33,10 @@ class WardClient(
     private val onVideoConfig: (width: Int, height: Int, fps: Int) -> Unit,
     private val onVideoFrame: (data: ByteArray, timestampNs: Long, isKeyframe: Boolean) -> Unit,
     private var transport: WardTransport = LanTlsTransport(),
-    private val onSessionAccepted: ((WardMessage.SessionAccepted) -> Unit)? = null
+    private val onSessionAccepted: ((WardMessage.SessionAccepted) -> Unit)? = null,
+    private val clientDeviceId: ByteArray = ByteArray(32),
+    private val authToken: String = "",
+    private val onPinRequired: (((String) -> Unit) -> Unit)? = null
 ) {
     private val isRunning = AtomicBoolean(false)
 
@@ -52,19 +55,55 @@ class WardClient(
                 val initMsg = WardMessage.ConnectionInit(
                     protocolVersion = 1,
                     clientType = 1, // Android
-                    deviceId = ByteArray(32),
+                    deviceId = clientDeviceId,
                     deviceName = deviceName
                 )
                 transport.sendInput(initMsg)
                 Log.i(TAG, "Sent CONNECTION_INIT ($deviceName)")
 
-                // 2. Read SESSION_ACCEPTED
-                val headerAccepted = transport.receiveHeader()
-                val payloadAccepted = transport.receivePayload(headerAccepted.payloadLen)
-                if (headerAccepted.type != MessageType.SESSION_ACCEPTED) {
-                    throw IllegalStateException("Expected SESSION_ACCEPTED, received ${headerAccepted.type}")
+                // 2. Read handshake response: AUTH_REQUEST, SESSION_ACCEPTED, or SESSION_REJECTED
+                var header = transport.receiveHeader()
+                var payload = transport.receivePayload(header.payloadLen)
+
+                if (header.type == MessageType.AUTH_REQUEST) {
+                    val authReq = WardMessage.AuthRequest.parse(payload)
+                    Log.i(TAG, "Received AUTH_REQUEST: method=${authReq.authMethod}")
+
+                    if (authReq.authMethod == 2.toShort()) {
+                        // Saved token authentication
+                        Log.i(TAG, "Authenticating with saved token...")
+                        val resp = WardMessage.AuthResponse(2.toShort(), authToken.toByteArray(Charsets.UTF_8))
+                        transport.sendInput(resp)
+                    } else if (authReq.authMethod == 1.toShort()) {
+                        // First-time PIN pairing challenge
+                        Log.i(TAG, "PIN pairing required by host")
+                        val pinFuture = java.util.concurrent.CompletableFuture<String>()
+                        if (onPinRequired != null) {
+                            onPinRequired.invoke { pin ->
+                                pinFuture.complete(pin)
+                            }
+                        } else {
+                            throw IllegalStateException("PIN required by server but no PIN callback configured")
+                        }
+                        val enteredPin = pinFuture.get(60, java.util.concurrent.TimeUnit.SECONDS)
+                        val resp = WardMessage.AuthResponse(1.toShort(), enteredPin.trim().toByteArray(Charsets.UTF_8))
+                        transport.sendInput(resp)
+                    }
+
+                    header = transport.receiveHeader()
+                    payload = transport.receivePayload(header.payloadLen)
                 }
-                val accepted = WardMessage.SessionAccepted.parse(payloadAccepted)
+
+                if (header.type == MessageType.SESSION_REJECTED) {
+                    val rejected = WardMessage.SessionRejected.parse(payload)
+                    throw IllegalStateException("Session rejected (${rejected.reasonCode}): ${rejected.reasonMessage}")
+                }
+
+                if (header.type != MessageType.SESSION_ACCEPTED) {
+                    throw IllegalStateException("Expected SESSION_ACCEPTED, received ${header.type}")
+                }
+
+                val accepted = WardMessage.SessionAccepted.parse(payload)
                 Log.i(TAG, "Session accepted via ${transport.transportType}! Session ID = ${accepted.sessionId}, Server = ${accepted.serverDeviceName}")
                 onSessionAccepted?.invoke(accepted)
 

@@ -39,12 +39,13 @@ pub async fn run_session(
     .context("Timed out waiting for CONNECTION_INIT")?
     .context("Failed to read CONNECTION_INIT")?;
 
-    match init_msg {
-        Message::ConnectionInit { protocol_version, device_name, .. } => {
+    let (client_device_id_bytes, client_device_name) = match init_msg {
+        Message::ConnectionInit { protocol_version, device_id, device_name, .. } => {
             info!(
                 "Client connected: '{}' (protocol v{}) via {}",
                 device_name, protocol_version, transport_type
             );
+            (device_id, device_name)
         }
         other => {
             warn!("Expected ConnectionInit, received {:?}", other.msg_type());
@@ -55,6 +56,94 @@ pub async fn run_session(
             let seq = sequence.fetch_add(1, Ordering::Relaxed);
             let _ = protocol::write_message(&mut writer, &err, seq).await;
             return Ok(());
+        }
+    };
+
+    // 2. Client Authentication & Pairing Verification
+    let is_zero_device_id = client_device_id_bytes.iter().all(|&b| b == 0);
+    if !is_zero_device_id {
+        let device_id_hex: String = client_device_id_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        if let Ok(mut auth_mgr) = crate::auth::AuthManager::load_default() {
+            if auth_mgr.is_authorized(&device_id_hex) {
+                // Client is already paired: verify auth token
+                let auth_req = Message::AuthRequest {
+                    auth_method: crate::auth::AUTH_METHOD_TOKEN,
+                    challenge: b"WARD_TOKEN_CHALLENGE".to_vec(),
+                };
+                let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                protocol::write_message(&mut writer, &auth_req, seq).await
+                    .context("Failed to send AuthRequest for token")?;
+
+                let (_h, auth_resp) = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    protocol::read_message(&mut reader),
+                )
+                .await
+                .context("Timed out waiting for AuthResponse")?
+                .context("Failed to read AuthResponse")?;
+
+                let token_valid = match auth_resp {
+                    Message::AuthResponse { auth_method, response } if auth_method == crate::auth::AUTH_METHOD_TOKEN => {
+                        let token_str = String::from_utf8_lossy(&response);
+                        auth_mgr.verify_token(&device_id_hex, token_str.trim())
+                    }
+                    _ => false,
+                };
+
+                if !token_valid {
+                    warn!("Client '{}' failed token authentication", client_device_name);
+                    let rejected = Message::SessionRejected {
+                        reason_code: 0x0002,
+                        reason_message: "Invalid authentication token".to_string(),
+                    };
+                    let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                    let _ = protocol::write_message(&mut writer, &rejected, seq).await;
+                    return Ok(());
+                }
+                info!("Client '{}' successfully authenticated via saved token", client_device_name);
+            } else {
+                // Client is not yet paired: generate 6-digit PIN and challenge client
+                let (_pin, _token) = auth_mgr.generate_pairing_pin(&device_id_hex, &client_device_name);
+                let auth_req = Message::AuthRequest {
+                    auth_method: crate::auth::AUTH_METHOD_PIN,
+                    challenge: b"WARD_PIN_CHALLENGE".to_vec(),
+                };
+                let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                protocol::write_message(&mut writer, &auth_req, seq).await
+                    .context("Failed to send AuthRequest for PIN")?;
+
+                let (_h, auth_resp) = tokio::time::timeout(
+                    Duration::from_secs(60),
+                    protocol::read_message(&mut reader),
+                )
+                .await
+                .context("Timed out waiting for AuthResponse PIN")?
+                .context("Failed to read AuthResponse PIN")?;
+
+                let pin_res = match auth_resp {
+                    Message::AuthResponse { auth_method, response } if auth_method == crate::auth::AUTH_METHOD_PIN => {
+                        let pin_str = String::from_utf8_lossy(&response);
+                        auth_mgr.verify_pairing_pin(&device_id_hex, &client_device_name, pin_str.trim())
+                    }
+                    _ => Err(anyhow::anyhow!("Unexpected response to PIN auth request")),
+                };
+
+                match pin_res {
+                    Ok(_assigned_token) => {
+                        info!("Client '{}' successfully paired with PIN!", client_device_name);
+                    }
+                    Err(e) => {
+                        warn!("Client '{}' failed PIN verification: {}", client_device_name, e);
+                        let rejected = Message::SessionRejected {
+                            reason_code: 0x0001,
+                            reason_message: format!("Pairing failed: {}", e),
+                        };
+                        let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                        let _ = protocol::write_message(&mut writer, &rejected, seq).await;
+                        return Ok(());
+                    }
+                }
+            }
         }
     }
 

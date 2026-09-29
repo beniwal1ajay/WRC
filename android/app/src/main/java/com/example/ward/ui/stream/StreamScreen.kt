@@ -149,6 +149,8 @@ fun WardRemoteApp() {
     var portText by remember { mutableStateOf(pairedDevice.lastKnownPort.toString()) }
     var showManualSettings by remember { mutableStateOf(false) }
     var isOnline by remember { mutableStateOf<Boolean?>(null) }
+    var pendingPinCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var enteredPinText by remember { mutableStateOf("") }
 
     var connectionState by remember { mutableStateOf<ConnectionState>(ConnectionState.Disconnected) }
     var fps by remember { mutableIntStateOf(0) }
@@ -1014,6 +1016,11 @@ fun WardRemoteApp() {
                                         onSessionAccepted = { accepted ->
                                             val updated = deviceStore.updateFromSession(accepted, host.trim(), port)
                                             pairedDevice = updated
+                                        },
+                                        clientDeviceId = deviceStore.getOrCreateClientDeviceId(),
+                                        authToken = deviceStore.getAuthToken(),
+                                        onPinRequired = { callback ->
+                                            pendingPinCallback = callback
                                         }
                                     )
                                     wardClient = client
@@ -1093,5 +1100,78 @@ fun WardRemoteApp() {
                 }
             }
         }
+    }
+
+    if (pendingPinCallback != null) {
+        AlertDialog(
+            onDismissRequest = {
+                val cb = pendingPinCallback
+                pendingPinCallback = null
+                cb?.invoke("")
+            },
+            containerColor = Color(0xFF141824),
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🔐", fontSize = 20.sp)
+                    Text("Host Pairing PIN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Enter the 6-digit PIN displayed on your Ubuntu PC for '${pairedDevice.deviceName}':",
+                        color = Color(0xFFCBD5E1),
+                        fontSize = 13.sp
+                    )
+                    OutlinedTextField(
+                        value = enteredPinText,
+                        onValueChange = {
+                            if (it.length <= 6 && it.all { c -> c.isDigit() }) {
+                                enteredPinText = it
+                            }
+                        },
+                        label = { Text("6-Digit PIN") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF38BDF8),
+                            unfocusedBorderColor = Color(0xFF475569),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val pin = enteredPinText
+                        enteredPinText = ""
+                        val cb = pendingPinCallback
+                        pendingPinCallback = null
+                        cb?.invoke(pin)
+                    },
+                    enabled = enteredPinText.length == 6,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Verify & Pair", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        enteredPinText = ""
+                        val cb = pendingPinCallback
+                        pendingPinCallback = null
+                        cb?.invoke("")
+                    }
+                ) {
+                    Text("Cancel", color = Color(0xFF94A3B8))
+                }
+            }
+        )
     }
 }

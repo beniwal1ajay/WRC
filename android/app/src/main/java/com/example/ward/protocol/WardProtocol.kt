@@ -93,6 +93,80 @@ sealed class WardMessage(val type: MessageType) {
         }
     }
 
+    data class AuthRequest(
+        val authMethod: Short,
+        val challenge: ByteArray
+    ) : WardMessage(MessageType.AUTH_REQUEST) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(2 + 2 + challenge.size).order(ByteOrder.BIG_ENDIAN)
+            buf.putShort(authMethod)
+            buf.putShort(challenge.size.toShort())
+            buf.put(challenge)
+            return buf.array()
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is AuthRequest) return false
+            if (authMethod != other.authMethod) return false
+            return challenge.contentEquals(other.challenge)
+        }
+
+        override fun hashCode(): Int {
+            var result = authMethod.toInt()
+            result = 31 * result + challenge.contentHashCode()
+            return result
+        }
+
+        companion object {
+            fun parse(data: ByteArray): AuthRequest {
+                val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
+                val method = buf.short
+                val len = buf.short.toInt() and 0xFFFF
+                val challenge = ByteArray(minOf(len, buf.remaining()))
+                buf.get(challenge)
+                return AuthRequest(method, challenge)
+            }
+        }
+    }
+
+    data class AuthResponse(
+        val authMethod: Short,
+        val response: ByteArray
+    ) : WardMessage(MessageType.AUTH_RESPONSE) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(2 + 2 + response.size).order(ByteOrder.BIG_ENDIAN)
+            buf.putShort(authMethod)
+            buf.putShort(response.size.toShort())
+            buf.put(response)
+            return buf.array()
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is AuthResponse) return false
+            if (authMethod != other.authMethod) return false
+            return response.contentEquals(other.response)
+        }
+
+        override fun hashCode(): Int {
+            var result = authMethod.toInt()
+            result = 31 * result + response.contentHashCode()
+            return result
+        }
+
+        companion object {
+            fun parse(data: ByteArray): AuthResponse {
+                val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
+                val method = buf.short
+                val len = buf.short.toInt() and 0xFFFF
+                val resp = ByteArray(minOf(len, buf.remaining()))
+                buf.get(resp)
+                return AuthResponse(method, resp)
+            }
+        }
+    }
+
     data class SessionAccepted(
         val sessionId: Int,
         val serverDeviceId: ByteArray = ByteArray(32),
@@ -143,6 +217,36 @@ sealed class WardMessage(val type: MessageType) {
                     return SessionAccepted(sessionId, deviceId, name)
                 }
                 return SessionAccepted(sessionId)
+            }
+        }
+    }
+
+    data class SessionRejected(
+        val reasonCode: Int,
+        val reasonMessage: String
+    ) : WardMessage(MessageType.SESSION_REJECTED) {
+        override fun serialize(): ByteArray {
+            val msgBytes = reasonMessage.toByteArray(Charsets.UTF_8)
+            val buf = ByteBuffer.allocate(4 + 2 + msgBytes.size).order(ByteOrder.BIG_ENDIAN)
+            buf.putInt(reasonCode)
+            buf.putShort(msgBytes.size.toShort())
+            buf.put(msgBytes)
+            return buf.array()
+        }
+
+        companion object {
+            fun parse(data: ByteArray): SessionRejected {
+                val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
+                val code = buf.int
+                val msg = if (buf.remaining() >= 2) {
+                    val len = buf.short.toInt() and 0xFFFF
+                    val b = ByteArray(minOf(len, buf.remaining()))
+                    buf.get(b)
+                    String(b, Charsets.UTF_8)
+                } else {
+                    ""
+                }
+                return SessionRejected(code, msg)
             }
         }
     }

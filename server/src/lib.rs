@@ -3,6 +3,7 @@
 //! Exposes modules for portal interaction, screen capture, protocol serialization,
 //! video encoding, and TLS 1.3 network streaming.
 
+pub mod auth;
 pub mod capture;
 pub mod encoder;
 pub mod identity;
