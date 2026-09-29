@@ -174,12 +174,19 @@ async fn run_streaming_server(port: u16) -> Result<()> {
     info!("Awaiting connection from Android client...");
     info!("(Press Ctrl+C to shut down)");
 
+    // Shared active session running flag to allow Ctrl-C termination while keeping server listening on client disconnect
+    let active_session_running: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>> = Arc::new(std::sync::Mutex::new(None));
+
     // Catch Ctrl+C
     let ctrlc_running = running.clone();
+    let ctrlc_session = active_session_running.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             info!("Received shutdown signal (Ctrl+C). Terminating...");
             ctrlc_running.store(false, Ordering::Relaxed);
+            if let Some(s) = ctrlc_session.lock().unwrap().as_ref() {
+                s.store(false, Ordering::Relaxed);
+            }
         }
     });
 
@@ -192,7 +199,8 @@ async fn run_streaming_server(port: u16) -> Result<()> {
                         let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(4);
                         *active_client_tx.lock().unwrap() = Some(client_tx);
 
-                        let client_running = running.clone();
+                        let session_running = Arc::new(AtomicBool::new(true));
+                        *active_session_running.lock().unwrap() = Some(session_running.clone());
                         let client_portal = portal_arc.clone();
 
                         if let Err(e) = handle_client_session(
@@ -200,15 +208,16 @@ async fn run_streaming_server(port: u16) -> Result<()> {
                             peer_addr,
                             client_rx,
                             Some(client_portal),
-                            client_running,
+                            session_running,
                         ).await {
                             warn!("Client session ended with error: {:#}", e);
                         } else {
                             info!("Client session closed cleanly");
                         }
 
+                        *active_session_running.lock().unwrap() = None;
                         *active_client_tx.lock().unwrap() = None;
-                        info!("Waiting for next client connection...");
+                        info!("Waiting for next client connection (or mobile reconnect)...");
                     }
                     Err(e) => {
                         if running.load(Ordering::Relaxed) {

@@ -1026,7 +1026,7 @@ fun WardRemoteApp() {
                                     wardClient = client
                                     client.connect(host.trim(), port)
                                 },
-                                enabled = state !is ConnectionState.Connecting,
+                                enabled = state !is ConnectionState.Connecting && state !is ConnectionState.Reconnecting,
                                 modifier = Modifier.fillMaxWidth().height(52.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
                                 shape = RoundedCornerShape(14.dp)
@@ -1039,8 +1039,25 @@ fun WardRemoteApp() {
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
                                     Text("Connecting to ${pairedDevice.deviceName}...", fontSize = 14.sp, color = Color.White)
+                                } else if (state is ConnectionState.Reconnecting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        color = Color(0xFFFDE68A),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text("Reconnecting (#${state.attempt})...", fontSize = 14.sp, color = Color(0xFFFDE68A))
                                 } else {
                                     Text("Connect to ${pairedDevice.deviceName}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+
+                            if (state is ConnectionState.Reconnecting) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                TextButton(
+                                    onClick = { wardClient?.disconnect() }
+                                ) {
+                                    Text("Cancel Reconnect", color = Color(0xFFF87171), fontSize = 12.sp)
                                 }
                             }
 

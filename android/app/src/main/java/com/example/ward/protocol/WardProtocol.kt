@@ -429,6 +429,34 @@ sealed class WardMessage(val type: MessageType) {
         }
     }
 
+    data class Ping(val timestampNs: Long) : WardMessage(MessageType.PING) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+            buf.putLong(timestampNs)
+            return buf.array()
+        }
+        companion object {
+            fun parse(payload: ByteArray): Ping {
+                val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+                return Ping(buf.long)
+            }
+        }
+    }
+
+    data class Pong(val timestampNs: Long) : WardMessage(MessageType.PONG) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+            buf.putLong(timestampNs)
+            return buf.array()
+        }
+        companion object {
+            fun parse(payload: ByteArray): Pong {
+                val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+                return Pong(buf.long)
+            }
+        }
+    }
+
     object Disconnect : WardMessage(MessageType.DISCONNECT) {
         override fun serialize(): ByteArray = ByteArray(0)
     }

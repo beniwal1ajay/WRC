@@ -185,6 +185,8 @@ pub async fn run_session(
     // Channel for client input events -> input dispatcher
     let (input_tx, mut input_rx) = mpsc::channel::<Message>(512);
     let (telemetry_tx, mut telemetry_rx) = mpsc::channel::<(u16, u16)>(64);
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
+    let outbound_tx_reader = outbound_tx.clone();
     let keyframe_requested = Arc::new(AtomicBool::new(true)); // force keyframe on start
     let kf_req_clone = keyframe_requested.clone();
     let running_reader = running.clone();
@@ -201,6 +203,23 @@ pub async fn run_session(
                     Message::Stats { fps, latency_ms, .. } => {
                         debug!("Client stats: {} fps, latency {}ms", fps, latency_ms);
                         let _ = telemetry_tx.try_send((latency_ms, fps));
+                    }
+                    Message::Ping { timestamp_ns } => {
+                        debug!("Received Heartbeat Ping from client ({}ns)", timestamp_ns);
+                        let _ = outbound_tx_reader.try_send(Message::Pong { timestamp_ns });
+                    }
+                    Message::Pong { timestamp_ns } => {
+                        let now_ns = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64;
+                        let rtt_ms = if now_ns > timestamp_ns {
+                            ((now_ns - timestamp_ns) / 1_000_000) as u16
+                        } else {
+                            0
+                        };
+                        debug!("Received Heartbeat Pong from client, RTT: {}ms", rtt_ms);
+                        let _ = telemetry_tx.try_send((rtt_ms, 0));
                     }
                     Message::Disconnect => {
                         info!("Client sent disconnect request");
@@ -307,6 +326,21 @@ pub async fn run_session(
     while running.load(Ordering::Relaxed) {
         tokio::select! {
             biased;
+
+            outbound_opt = outbound_rx.recv() => {
+                match outbound_opt {
+                    Some(msg) => {
+                        let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                        if let Err(e) = protocol::write_message(&mut writer, &msg, seq).await {
+                            warn!("Failed to write outbound message to client: {:#}", e);
+                            break;
+                        }
+                    }
+                    None => {
+                        // Channel closed
+                    }
+                }
+            }
 
             telemetry_opt = telemetry_rx.recv() => {
                 match telemetry_opt {

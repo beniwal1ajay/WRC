@@ -197,4 +197,26 @@ class WardProtocolTest {
         assertEquals(3.toShort(), parsed.encodeMs)
         assertEquals(12.toShort(), parsed.latencyMs)
     }
+
+    @Test
+    fun testPingRoundtrip() {
+        val nowNs = 1727618000123456789L
+        val original = WardMessage.Ping(nowNs)
+        val serialized = original.serialize()
+        assertEquals(8, serialized.size)
+
+        val parsed = WardMessage.Ping.parse(serialized)
+        assertEquals(nowNs, parsed.timestampNs)
+    }
+
+    @Test
+    fun testPongRoundtrip() {
+        val nowNs = 1727618000987654321L
+        val original = WardMessage.Pong(nowNs)
+        val serialized = original.serialize()
+        assertEquals(8, serialized.size)
+
+        val parsed = WardMessage.Pong.parse(serialized)
+        assertEquals(nowNs, parsed.timestampNs)
+    }
 }
