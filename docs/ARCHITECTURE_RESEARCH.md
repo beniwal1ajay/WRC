@@ -358,16 +358,51 @@ Android Phone                          Ubuntu Laptop
 
 ---
 
-## 13. Next Steps
+## 13. Project Status
+ 
+- ✅ Environment discovery complete (Milestone 0).
+- ✅ Core Wayland capture, input injection, and H.264 streaming (Milestones 1–4).
+- ✅ WAN Remote Access Architecture (12 Phases) implemented and verified end-to-end.
 
-1. ✅ Environment discovery complete (this document).
-2. **Install Rust toolchain and dev dependencies.**
-3. **Begin Milestone 1:** Proof of Wayland screen capture.
-   - Create Rust project with PipeWire and D-Bus bindings.
-   - Connect to ScreenCast portal.
-   - Receive PipeWire frames.
-   - Save frames to verify capture works.
-4. **Begin Milestone 2:** Proof of remote input.
-   - Connect to RemoteDesktop portal.
-   - Move mouse programmatically.
-   - Send keyboard events.
+---
+
+## 14. WAN Remote Access Architecture (Complete Implementation)
+
+WARD incorporates a resilient, secure, zero-config 12-phase WAN remote architecture enabling seamless control over mobile (LTE/5G) and external Internet networks without static port forwarding or third-party proprietary server daemons:
+
+```
+Android Client (Cellular / WAN)                     Ubuntu Host (Wayland behind NAT)
+┌──────────────────────────────────────┐            ┌──────────────────────────────────────┐
+│  Transport Selector (4-Tier Probe)   │            │  Multi-Transport Listener Daemon     │
+│  - Tier 1: Direct LAN (Sub-ms)       │   Probes   │  - LAN / RFC 1918 listener           │
+│  - Tier 2: Direct VPN (WireGuard/TS) │───────────►│  - VPN Interface listener (100.64/10)│
+│  - Tier 3: P2P Hole-Punching (STUN)  │            │  - RFC 5389 STUN Characterization    │
+│  - Tier 4: Authenticated TURN Relay  │            │  - RFC 5766 TURN Framing & Integrity │
+└──────────────────┬───────────────────┘            └──────────────────▲───────────────────┘
+                   │                                                   │
+                   │        Selected Best Working Transport            │
+                   └───────────────────────────────────────────────────┘
+                                       │
+                      TLS 1.3 Encrypted Session Stream
+                                       │
+┌──────────────────▼───────────────────┐            ┌──────────────────▼───────────────────┐
+│  Mobile Network Recovery Engine      │            │  Adaptive Video Controller (AIMD)    │
+│  - 2.5s Ping / 7.5s Liveness Timeout │            │  - RTT & Loss-Driven Bitrate Tuning  │
+│  - Exponential Backoff with Jitter   │            │  - Dynamic FPS Scaling (15-60 FPS)   │
+│  - Token-Based Zero-PIN Fast Resume  │            │  - Instant Keyframe Resync on Resume │
+└──────────────────────────────────────┘            └──────────────────────────────────────┘
+```
+
+### Architectural Pillars
+
+1. **Pluggable Transport Abstraction (`Transport` trait):** Uniform async stream interface (`Read + Write + Send + Unpin`) decoupling higher-level session logic from raw sockets or TURN encapsulation.
+2. **Ed25519 Device Cryptographic Identity:** Ephemeral session certificate generation with pinned Ed25519 identity keys and constant-time token comparison.
+3. **Multi-Tier Waterflow Priority Engine:**
+   - **Tier 1 (Direct LAN):** Ultra-low latency RFC 1918 traffic.
+   - **Tier 2 (Direct VPN):** Encrypted peer mesh overlay (`100.64.0.0/10`, `fd00::/8`).
+   - **Tier 3 (P2P STUN):** Server reflexive candidate hole punching across standard NAT mappings.
+   - **Tier 4 (TURN Relay):** Channel data framing fallback across restrictive carrier-grade NATs.
+4. **AIMD Adaptive Video Rate Controller:** Real-time round-trip latency and loss telemetry dynamically modulates H.264 bitrate and framerates (1.5 Mbps to 16 Mbps; 15 FPS to 60 FPS).
+5. **Mobile Network Recovery & Backoff:** Background heartbeat monitors link health with exponential backoff and randomized jitter to prevent reconnect storms during network transitions (e.g. Wi-Fi to 5G handover).
+6. **Security Hardening:** Constant-time verification (`subtle::ConstantTimeEq`, `MessageDigest.isEqual`), brute-force PIN lockout, memory zeroization (`ZeroizeOnDrop`), and strict protocol buffer boundaries (16 MB frame ceiling, 64 KB control ceiling).
+

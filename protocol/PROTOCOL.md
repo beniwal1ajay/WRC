@@ -87,6 +87,7 @@ Every message has a fixed 12-byte header followed by a variable-length payload.
 | 0x0050  | PING                    | Bidirectional   | Latency measurement request              |
 | 0x0051  | PONG                    | Bidirectional   | Latency measurement response             |
 | 0x0060  | STATS                   | Server → Client | Server statistics (FPS, bitrate, etc.)   |
+| 0x0070  | CANDIDATE_EXCHANGE      | Bidirectional   | ICE candidates for NAT traversal         |
 | 0x00F0  | DISCONNECT              | Bidirectional   | Clean disconnection                      |
 | 0x00FF  | ERROR                   | Bidirectional   | Error notification                       |
 
@@ -241,7 +242,23 @@ Coordinates are normalized to the video stream resolution (0.0 to width/height).
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |   Message Length (u16)        | Message (UTF-8)...            |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+### 5.14 CANDIDATE_EXCHANGE (0x0070)
+
 ```
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|   Candidate Count (u16)       | (Per candidate follows...)    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+| Candidate Type (u8) | Proto (u8)| IP Length (u16)             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+| IP Address (UTF-8, variable)                                  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|           Port (u16)          |       Priority (u32)          |
+|                               |                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+- **Candidate Types:** 1 = Host, 2 = ServerReflexive (STUN), 3 = Relay (TURN)
+- **Protocols:** 1 = UDP, 2 = TCP
 
 ---
 
@@ -250,31 +267,31 @@ Coordinates are normalized to the video stream resolution (0.0 to width/height).
 ```
 Client                                    Server
   |                                          |
-  |--- TLS handshake ----------------------->|
-  |<-- TLS handshake complete ---------------|
+  |--- Multi-Tier Transport Probe ---------->| (Tier 1 LAN / Tier 2 VPN / Tier 3 P2P / Tier 4 TURN)
+  |--- TLS 1.3 handshake -------------------->|
+  |<-- TLS 1.3 handshake complete -----------|
   |                                          |
-  |--- CONNECTION_INIT --------------------->|
-  |<-- AUTH_REQUEST -------------------------|
-  |--- AUTH_RESPONSE ----------------------->|
+  |--- CONNECTION_INIT --------------------->| (Protocol version, client device ID, public key)
+  |<-- AUTH_REQUEST -------------------------| (Auth method: Token challenge or PIN pairing required)
+  |--- AUTH_RESPONSE ----------------------->| (Token or 6-digit user-verified PIN)
   |                                          |
   |  [if authenticated]                      |
-  |<-- SESSION_ACCEPTED ---------------------|
+  |<-- SESSION_ACCEPTED ---------------------| (Auth token for fast subsequent reconnect)
   |<-- VIDEO_CONFIG -------------------------|
   |<-- VIDEO_KEYFRAME ----------------------|
   |<-- VIDEO_FRAME * N ---------------------|
   |                                          |
-  |--- MOUSE_MOVE ------------------------->|
-  |--- MOUSE_BUTTON ----------------------->|
-  |--- KEY_DOWN --------------------------->|
-  |--- KEY_UP ------------------------------>|
+  |--- MOUSE_MOVE / TOUCH ------------------>|
+  |--- MOUSE_BUTTON ------------------------>|
+  |--- KEY_DOWN / KEY_UP ------------------->|
   |                                          |
-  |<-> PING / PONG (periodic) ------------->|
-  |<-> CLIPBOARD_SET ---------------------->|
+  |<-> PING / PONG (Heartbeat every 2.5s) -->| (Auto-reconnect triggered if silence > 7.5s)
+  |<-> CLIPBOARD_SET / GET ----------------->|
   |                                          |
-  |--- DISCONNECT ------------------------->|
+  |--- DISCONNECT -------------------------->|
   |                                          |
   
-  [if not authenticated]
+  [if not authenticated / locked out]
   |<-- SESSION_REJECTED ---------------------|
   | (connection closed)                      |
 ```
@@ -292,15 +309,31 @@ Client                                    Server
 | 0x0005 | UNSUPPORTED_CODEC       | Requested codec not available        |
 | 0x0006 | INTERNAL_ERROR          | Server internal error                |
 | 0x0007 | DEVICE_REVOKED          | Device has been revoked              |
-| 0x0008 | RATE_LIMIT              | Too many requests                    |
+| 0x0008 | RATE_LIMIT              | Too many requests / PIN lockout      |
 
 ---
 
-## 8. Security Considerations
+## 8. Multi-Tier Transport Selection Hierarchy
 
-- All messages are encrypted via TLS 1.3.
-- Sequence numbers prevent replay attacks within a session.
-- The CONNECTION_INIT includes the device's Ed25519 public key for identity.
-- Authentication uses challenge-response with Ed25519 signatures.
-- Maximum payload size prevents memory exhaustion attacks.
-- Invalid messages result in ERROR + connection termination.
+When establishing a session from WAN or cellular connections, WARD probes and establishes links along a 4-tier waterfall priority model:
+
+1. **Tier 1 — Direct LAN (`DirectLan`):** Highest performance, sub-millisecond network latency. Direct TLS connection to RFC 1918 private subnet addresses (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`).
+2. **Tier 2 — Direct VPN (`DirectVpn`):** Direct secure connectivity across Tailscale / WireGuard (`100.64.0.0/10`, `fd00::/8`). Unfiltered, non-relayed end-to-end transport.
+3. **Tier 3 — P2P STUN Hole-Punching (`P2pStun`):** Direct peer-to-peer UDP/TCP hole punching through cone and symmetric NAT boundaries using RFC 5389 STUN server reflexive candidate exchange.
+4. **Tier 4 — Authenticated TURN Relay (`TurnRelay`):** Fallback relay guaranteed traversal through restrictive enterprise symmetric NATs and carrier firewalls using RFC 5766 TURN data framing and HMAC-SHA1 message integrity.
+
+### Mobile Network Recovery & Heartbeat Engine
+- **Heartbeat Interval:** Android client issues `PING (0x0050)` every `2,500 ms`.
+- **Heartbeat Timeout:** If no packets or `PONG (0x0051)` received for `7,500 ms` (3 consecutive missed cycles), connection is flagged degraded and auto-reconnect is triggered.
+- **Exponential Backoff:** Base delay `500 ms`, exponent `1.8`, maximum delay `15,000 ms`, plus $\pm 20\%$ uniform randomized jitter.
+- **Fast Session Resume:** Client presents persisted `authToken` on reconnect to bypass manual PIN approval and immediately transmits `KEYFRAME_REQUEST (0x0013)` for seamless video continuity.
+
+---
+
+## 9. Security Hardening & Zero-Trust Safeguards
+
+- **End-to-End Encryption:** Strict TLS 1.3 encryption across all tiers (LAN, VPN, P2P, and inside TURN relays).
+- **Constant-Time Verification:** All authentication tokens, pairing PINs, STUN transaction IDs, and TURN HMAC-SHA1 integrity hashes are verified using constant-time equality comparisons (`subtle::ConstantTimeEq` in Rust, `MessageDigest.isEqual` on Android) to eliminate side-channel timing attacks.
+- **Brute-Force PIN Lockout:** Rate limiter enforces maximum 5 consecutive failed PIN attempts with exponential progressive delays and temporary device lockout.
+- **Memory Zeroization:** Cryptographic keys and authorization token memory are zeroized upon drop (`zeroize::ZeroizeOnDrop`).
+- **Resource Exhaustion Defense:** Max video payload restricted to 16 MB; control messages capped at 64 KB. Over-sized packets trigger instant disconnect.

@@ -111,6 +111,17 @@ impl AuthManager {
         self.store.clients.contains_key(device_id)
     }
 
+    /// Retrieve the authorized token for a paired device ID if authorized.
+    pub fn get_authorized_token(&self, device_id: &str) -> Option<String> {
+        self.store.clients.get(device_id).map(|c| c.auth_token.clone())
+    }
+
+    /// Remove an authorized client device (e.g. unpair / cleanup).
+    pub fn remove_authorized_client(&mut self, device_id: &str) -> Result<()> {
+        self.store.clients.remove(device_id);
+        Self::save_store(&self.store_path, &self.store)
+    }
+
     /// Retrieve any active pairing PIN pending for a device.
     pub fn get_pending_pin(device_id: &str) -> Option<String> {
         let lock = PENDING_PINS.lock().unwrap();
