@@ -18,7 +18,8 @@ sealed class ConnectionState {
         val port: Int,
         val width: Int,
         val height: Int,
-        val transportType: TransportType = TransportType.LAN
+        val transportType: TransportType = TransportType.LAN,
+        val serverDeviceName: String = "AJAY-UBUNTU"
     ) : ConnectionState()
     data class Failed(val error: String) : ConnectionState()
 }
@@ -31,7 +32,8 @@ class WardClient(
     private val onStateChanged: (ConnectionState) -> Unit,
     private val onVideoConfig: (width: Int, height: Int, fps: Int) -> Unit,
     private val onVideoFrame: (data: ByteArray, timestampNs: Long, isKeyframe: Boolean) -> Unit,
-    private var transport: WardTransport = LanTlsTransport()
+    private var transport: WardTransport = LanTlsTransport(),
+    private val onSessionAccepted: ((WardMessage.SessionAccepted) -> Unit)? = null
 ) {
     private val isRunning = AtomicBoolean(false)
 
@@ -63,7 +65,8 @@ class WardClient(
                     throw IllegalStateException("Expected SESSION_ACCEPTED, received ${headerAccepted.type}")
                 }
                 val accepted = WardMessage.SessionAccepted.parse(payloadAccepted)
-                Log.i(TAG, "Session accepted via ${transport.transportType}! Session ID = ${accepted.sessionId}")
+                Log.i(TAG, "Session accepted via ${transport.transportType}! Session ID = ${accepted.sessionId}, Server = ${accepted.serverDeviceName}")
+                onSessionAccepted?.invoke(accepted)
 
                 // 3. Read initial VIDEO_CONFIG
                 val headerConfig = transport.receiveHeader()
@@ -75,7 +78,14 @@ class WardClient(
                 Log.i(TAG, "Received VIDEO_CONFIG: ${config.width}x${config.height} @ ${config.fpsTarget} fps")
 
                 onVideoConfig(config.width, config.height, config.fpsTarget.toInt())
-                onStateChanged(ConnectionState.Connected(host, port, config.width, config.height, transport.transportType))
+                onStateChanged(ConnectionState.Connected(
+                    host = host,
+                    port = port,
+                    width = config.width,
+                    height = config.height,
+                    transportType = transport.transportType,
+                    serverDeviceName = accepted.serverDeviceName
+                ))
 
                 // 4. Main message receiving loop
                 while (isRunning.get()) {

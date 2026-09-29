@@ -153,6 +153,8 @@ pub enum Message {
     },
     SessionAccepted {
         session_id: u32,
+        server_device_id: [u8; 32],
+        server_device_name: String,
     },
     SessionRejected {
         reason_code: u32,
@@ -268,8 +270,12 @@ impl Message {
                 buf.extend_from_slice(&(response.len() as u16).to_be_bytes());
                 buf.extend_from_slice(response);
             }
-            Self::SessionAccepted { session_id } => {
+            Self::SessionAccepted { session_id, server_device_id, server_device_name } => {
                 buf.extend_from_slice(&session_id.to_be_bytes());
+                buf.extend_from_slice(server_device_id);
+                let name_bytes = server_device_name.as_bytes();
+                buf.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
+                buf.extend_from_slice(name_bytes);
             }
             Self::SessionRejected { reason_code, reason_message } => {
                 buf.extend_from_slice(&reason_code.to_be_bytes());
@@ -389,7 +395,27 @@ impl Message {
             MessageType::SessionAccepted => {
                 let mut u32_buf = [0u8; 4];
                 cur.read_exact(&mut u32_buf)?;
-                Ok(Self::SessionAccepted { session_id: u32::from_be_bytes(u32_buf) })
+                let session_id = u32::from_be_bytes(u32_buf);
+
+                let mut server_device_id = [0u8; 32];
+                let mut server_device_name = String::new();
+
+                if cur.read_exact(&mut server_device_id).is_ok() {
+                    let mut u16_buf = [0u8; 2];
+                    if cur.read_exact(&mut u16_buf).is_ok() {
+                        let name_len = u16::from_be_bytes(u16_buf) as usize;
+                        let mut name_buf = vec![0u8; name_len];
+                        if cur.read_exact(&mut name_buf).is_ok() {
+                            server_device_name = String::from_utf8_lossy(&name_buf).to_string();
+                        }
+                    }
+                }
+
+                Ok(Self::SessionAccepted {
+                    session_id,
+                    server_device_id,
+                    server_device_name,
+                })
             }
             MessageType::SessionRejected => {
                 let mut u32_buf = [0u8; 4];

@@ -153,7 +153,7 @@ async fn test_end_to_end_streaming_session() {
     .expect("Read error for SessionAccepted");
 
     match msg_accepted {
-        Message::SessionAccepted { session_id } => {
+        Message::SessionAccepted { session_id, .. } => {
             assert_eq!(session_id, 1);
         }
         other => panic!("Expected SessionAccepted, got {:?}", other),

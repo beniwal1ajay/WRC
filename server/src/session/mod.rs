@@ -58,8 +58,20 @@ pub async fn run_session(
         }
     }
 
-    // 2. Accept session
-    let accepted = Message::SessionAccepted { session_id: 1 };
+    // 2. Accept session with persistent Host Identity
+    let host_identity = crate::identity::HostIdentity::load_or_create(None)
+        .unwrap_or_else(|_| crate::identity::HostIdentity {
+            device_id: "0".repeat(64),
+            device_name: crate::identity::DEFAULT_DEVICE_NAME.to_string(),
+            public_key_hex: "0".repeat(64),
+            secret_key_bytes: [0u8; 32],
+        });
+
+    let accepted = Message::SessionAccepted {
+        session_id: 1,
+        server_device_id: host_identity.public_key_bytes(),
+        server_device_name: host_identity.device_name,
+    };
     let seq = sequence.fetch_add(1, Ordering::Relaxed);
     protocol::write_message(&mut writer, &accepted, seq).await
         .context("Failed to send SessionAccepted")?;

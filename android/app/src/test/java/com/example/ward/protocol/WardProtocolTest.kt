@@ -41,6 +41,31 @@ class WardProtocolTest {
     }
 
     @Test
+    fun testSessionAcceptedIdentityRoundtrip() {
+        val deviceId = ByteArray(32) { (it * 3).toByte() }
+        val original = WardMessage.SessionAccepted(
+            sessionId = 1234,
+            serverDeviceId = deviceId,
+            serverDeviceName = "AJAY-UBUNTU"
+        )
+        val serialized = original.serialize()
+        assertEquals(4 + 32 + 2 + "AJAY-UBUNTU".length, serialized.size)
+
+        val parsed = WardMessage.SessionAccepted.parse(serialized)
+        assertEquals(1234, parsed.sessionId)
+        assertArrayEquals(deviceId, parsed.serverDeviceId)
+        assertEquals("AJAY-UBUNTU", parsed.serverDeviceName)
+    }
+
+    @Test
+    fun testSessionAcceptedLegacyParse() {
+        val legacyBytes = java.nio.ByteBuffer.allocate(4).putInt(777).array()
+        val parsed = WardMessage.SessionAccepted.parse(legacyBytes)
+        assertEquals(777, parsed.sessionId)
+        assertEquals("Ubuntu Host", parsed.serverDeviceName)
+    }
+
+    @Test
     fun testVideoConfigParse() {
         val config = WardMessage.VideoConfig(
             width = 1920,

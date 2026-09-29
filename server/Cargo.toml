@@ -43,6 +43,8 @@ openh264 = "0.9"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
+rand_core = { version = "0.6", features = ["std"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

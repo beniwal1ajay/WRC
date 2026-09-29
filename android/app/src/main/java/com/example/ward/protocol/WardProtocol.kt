@@ -93,14 +93,56 @@ sealed class WardMessage(val type: MessageType) {
         }
     }
 
-    data class SessionAccepted(val sessionId: Int) : WardMessage(MessageType.SESSION_ACCEPTED) {
+    data class SessionAccepted(
+        val sessionId: Int,
+        val serverDeviceId: ByteArray = ByteArray(32),
+        val serverDeviceName: String = "Ubuntu Host"
+    ) : WardMessage(MessageType.SESSION_ACCEPTED) {
         override fun serialize(): ByteArray {
-            return ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(sessionId).array()
+            val nameBytes = serverDeviceName.toByteArray(Charsets.UTF_8)
+            val buf = ByteBuffer.allocate(4 + 32 + 2 + nameBytes.size).order(ByteOrder.BIG_ENDIAN)
+            buf.putInt(sessionId)
+            buf.put(serverDeviceId)
+            buf.putShort(nameBytes.size.toShort())
+            buf.put(nameBytes)
+            return buf.array()
         }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is SessionAccepted) return false
+            if (sessionId != other.sessionId) return false
+            if (!serverDeviceId.contentEquals(other.serverDeviceId)) return false
+            if (serverDeviceName != other.serverDeviceName) return false
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = sessionId
+            result = 31 * result + serverDeviceId.contentHashCode()
+            result = 31 * result + serverDeviceName.hashCode()
+            return result
+        }
+
         companion object {
             fun parse(data: ByteArray): SessionAccepted {
                 val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
-                return SessionAccepted(buf.int)
+                val sessionId = buf.int
+                if (data.size >= 36) {
+                    val deviceId = ByteArray(32)
+                    buf.get(deviceId)
+                    val name = if (data.size >= 38) {
+                        val nameLen = buf.short.toInt() and 0xFFFF
+                        val actualLen = minOf(nameLen, buf.remaining())
+                        val nameBytes = ByteArray(actualLen)
+                        buf.get(nameBytes)
+                        String(nameBytes, Charsets.UTF_8)
+                    } else {
+                        "Ubuntu Host"
+                    }
+                    return SessionAccepted(sessionId, deviceId, name)
+                }
+                return SessionAccepted(sessionId)
             }
         }
     }

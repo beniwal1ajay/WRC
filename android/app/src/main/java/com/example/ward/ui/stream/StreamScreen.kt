@@ -32,11 +32,18 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
+import com.example.ward.data.PairedDevice
+import com.example.ward.data.PairedDeviceStore
 import com.example.ward.decoder.VideoDecoder
 import com.example.ward.network.ConnectionState
 import com.example.ward.network.WardClient
 import com.example.ward.protocol.WardMessage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.net.InetSocketAddress
+import java.net.Socket
 
 // Linux X11/XKB keysyms
 private const val KEYSYM_FLAG = 0x80000000.toInt()
@@ -134,8 +141,15 @@ class RemoteInputView(
 
 @Composable
 fun WardRemoteApp() {
-    var host by remember { mutableStateOf("10.31.1.234") }
-    var portText by remember { mutableStateOf("9740") }
+    val context = LocalContext.current
+    val deviceStore = remember { PairedDeviceStore(context) }
+    var pairedDevice by remember { mutableStateOf(deviceStore.getPairedDevice()) }
+
+    var host by remember { mutableStateOf(pairedDevice.lastKnownHost) }
+    var portText by remember { mutableStateOf(pairedDevice.lastKnownPort.toString()) }
+    var showManualSettings by remember { mutableStateOf(false) }
+    var isOnline by remember { mutableStateOf<Boolean?>(null) }
+
     var connectionState by remember { mutableStateOf<ConnectionState>(ConnectionState.Disconnected) }
     var fps by remember { mutableIntStateOf(0) }
     var streamWidth by remember { mutableIntStateOf(1920) }
@@ -149,6 +163,28 @@ fun WardRemoteApp() {
     var remoteInputView: RemoteInputView? by remember { mutableStateOf(null) }
     var videoDecoder: VideoDecoder? by remember { mutableStateOf(null) }
     var wardClient: WardClient? by remember { mutableStateOf(null) }
+
+    // Probe host reachability periodically when disconnected
+    LaunchedEffect(host, portText, connectionState) {
+        if (connectionState !is ConnectionState.Connected) {
+            val targetHost = host.trim()
+            val targetPort = portText.toIntOrNull() ?: 9740
+            while (true) {
+                val reachable = withContext(Dispatchers.IO) {
+                    try {
+                        Socket().use { s ->
+                            s.connect(InetSocketAddress(targetHost, targetPort), 1200)
+                            true
+                        }
+                    } catch (e: Exception) {
+                        false
+                    }
+                }
+                isOnline = reachable
+                delay(4000)
+            }
+        }
+    }
 
     fun sendKeysym(keysym: Int) {
         val code = keysym or KEYSYM_FLAG
@@ -806,77 +842,160 @@ fun WardRemoteApp() {
                 }
             }
             else -> {
-                // Connection Form Screen
+                // -------------------------------------------------------------
+                // DISCONNECTED: Device Identity Screen (AJAY-UBUNTU Paired Card)
+                // -------------------------------------------------------------
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(24.dp),
+                        .padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
                     Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E1E)),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
                         shape = RoundedCornerShape(24.dp),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                        border = BorderStroke(1.dp, Color(0x3338BDF8)),
+                        elevation = CardDefaults.cardElevation(12.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
                     ) {
                         Column(
                             modifier = Modifier.padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Text(
-                                text = "WARD Desktop",
-                                fontSize = 26.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "Wayland Android Remote Desktop",
-                                fontSize = 14.sp,
-                                color = Color(0xFFB0BEC5)
-                            )
+                            // Device Icon / Avatar
+                            Box(
+                                modifier = Modifier
+                                    .size(72.dp)
+                                    .background(Color(0x260284C7), shape = RoundedCornerShape(20.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("🖥", fontSize = 36.sp)
+                            }
 
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            OutlinedTextField(
-                                value = host,
-                                onValueChange = { host = it },
-                                label = { Text("Server IP Address") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF4FC3F7),
-                                    unfocusedBorderColor = Color(0xFF546E7A),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
-                            )
-
-                            OutlinedTextField(
-                                value = portText,
-                                onValueChange = { portText = it },
-                                label = { Text("Port (Default: 9740)") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color(0xFF4FC3F7),
-                                    unfocusedBorderColor = Color(0xFF546E7A),
-                                    focusedTextColor = Color.White,
-                                    unfocusedTextColor = Color.White
-                                )
-                            )
-
-                            if (state is ConnectionState.Failed) {
+                            // Device Identity Title & Subtitle
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = "Connection Failed: ${state.error}",
-                                    color = Color(0xFFEF5350),
-                                    fontSize = 13.sp
+                                    text = pairedDevice.deviceName,
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Wayland Host • Persistent Identity",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF94A3B8)
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(8.dp))
+                            // Status Badges Row (Paired + Online/Offline)
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Paired Badge
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = Color(0x2214B8A6),
+                                    border = BorderStroke(1.dp, Color(0x6614B8A6))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text("✓", fontSize = 11.sp, color = Color(0xFF2DD4BF), fontWeight = FontWeight.Bold)
+                                        Text("Paired", fontSize = 11.sp, color = Color(0xFF2DD4BF), fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
 
+                                // Online / Offline Badge
+                                val statusText = when (isOnline) {
+                                    true -> "● Online"
+                                    false -> "○ Offline"
+                                    null -> "◌ Probing..."
+                                }
+                                val statusBg = when (isOnline) {
+                                    true -> Color(0x2210B981)
+                                    false -> Color(0x22EF4444)
+                                    null -> Color(0x2264748B)
+                                }
+                                val statusBorder = when (isOnline) {
+                                    true -> Color(0x6610B981)
+                                    false -> Color(0x66EF4444)
+                                    null -> Color(0x6664748B)
+                                }
+                                val statusColor = when (isOnline) {
+                                    true -> Color(0xFF34D399)
+                                    false -> Color(0xFFF87171)
+                                    null -> Color(0xFF94A3B8)
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = statusBg,
+                                    border = BorderStroke(1.dp, statusBorder)
+                                ) {
+                                    Text(
+                                        text = statusText,
+                                        fontSize = 11.sp,
+                                        color = statusColor,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                                    )
+                                }
+                            }
+
+                            // Host Metadata Snippet
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFF1E2433),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text("Last Known IP", fontSize = 11.sp, color = Color(0xFF64748B))
+                                        Text("$host:$portText", fontSize = 11.sp, color = Color(0xFFCBD5E1), fontWeight = FontWeight.Medium)
+                                    }
+                                    if (pairedDevice.deviceId.isNotBlank()) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("Device ID", fontSize = 11.sp, color = Color(0xFF64748B))
+                                            Text(
+                                                pairedDevice.deviceId.take(16) + "...",
+                                                fontSize = 11.sp,
+                                                color = Color(0xFF38BDF8),
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (state is ConnectionState.Failed) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0x26EF4444),
+                                    border = BorderStroke(1.dp, Color(0x66EF4444)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "Connection Failed: ${state.error}",
+                                        color = Color(0xFFFCA5A5),
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
+
+                            // Primary Connect Button
                             Button(
                                 onClick = {
                                     val port = portText.toIntOrNull() ?: 9740
@@ -891,26 +1010,82 @@ fun WardRemoteApp() {
                                         },
                                         onVideoFrame = { data, ts, isKeyframe ->
                                             videoDecoder?.feedFrame(data, ts, isKeyframe)
+                                        },
+                                        onSessionAccepted = { accepted ->
+                                            val updated = deviceStore.updateFromSession(accepted, host.trim(), port)
+                                            pairedDevice = updated
                                         }
                                     )
                                     wardClient = client
                                     client.connect(host.trim(), port)
                                 },
                                 enabled = state !is ConnectionState.Connecting,
-                                modifier = Modifier.fillMaxWidth().height(50.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0288D1)),
-                                shape = RoundedCornerShape(12.dp)
+                                modifier = Modifier.fillMaxWidth().height(52.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 if (state is ConnectionState.Connecting) {
                                     CircularProgressIndicator(
-                                        modifier = Modifier.size(24.dp),
+                                        modifier = Modifier.size(22.dp),
                                         color = Color.White,
                                         strokeWidth = 2.dp
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
-                                    Text("Connecting...")
+                                    Text("Connecting to ${pairedDevice.deviceName}...", fontSize = 14.sp, color = Color.White)
                                 } else {
-                                    Text("Connect to Desktop", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                    Text("Connect to ${pairedDevice.deviceName}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+
+                            // Collapsible Settings for Manual IP / Port
+                            TextButton(
+                                onClick = { showManualSettings = !showManualSettings }
+                            ) {
+                                Text(
+                                    text = if (showManualSettings) "▲ Hide Address Settings" else "▼ Edit Address / Port",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            AnimatedVisibility(visible = showManualSettings) {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                    OutlinedTextField(
+                                        value = host,
+                                        onValueChange = {
+                                            host = it
+                                            val port = portText.toIntOrNull() ?: 9740
+                                            deviceStore.savePairedDevice(pairedDevice.copy(lastKnownHost = it.trim(), lastKnownPort = port))
+                                        },
+                                        label = { Text("Server Host / IP") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = Color(0xFF38BDF8),
+                                            unfocusedBorderColor = Color(0xFF475569),
+                                            focusedTextColor = Color.White,
+                                            unfocusedTextColor = Color.White
+                                        )
+                                    )
+
+                                    OutlinedTextField(
+                                        value = portText,
+                                        onValueChange = {
+                                            portText = it
+                                            val port = it.toIntOrNull() ?: 9740
+                                            deviceStore.savePairedDevice(pairedDevice.copy(lastKnownHost = host.trim(), lastKnownPort = port))
+                                        },
+                                        label = { Text("Port (Default: 9740)") },
+                                        singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = Color(0xFF38BDF8),
+                                            unfocusedBorderColor = Color(0xFF475569),
+                                            focusedTextColor = Color.White,
+                                            unfocusedTextColor = Color.White
+                                        )
+                                    )
                                 }
                             }
                         }

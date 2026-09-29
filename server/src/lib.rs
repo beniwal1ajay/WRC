@@ -5,6 +5,7 @@
 
 pub mod capture;
 pub mod encoder;
+pub mod identity;
 pub mod network;
 pub mod portal;
 pub mod protocol;
