@@ -358,6 +358,33 @@ sealed class WardMessage(val type: MessageType) {
         override fun serialize(): ByteArray = ByteArray(0)
     }
 
+    data class Stats(
+        val fps: Short,
+        val bitrateKbps: Int,
+        val encodeMs: Short,
+        val latencyMs: Short
+    ) : WardMessage(MessageType.STATS) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN)
+            buf.putShort(fps)
+            buf.putInt(bitrateKbps)
+            buf.putShort(encodeMs)
+            buf.putShort(latencyMs)
+            return buf.array()
+        }
+
+        companion object {
+            fun parse(payload: ByteArray): Stats {
+                val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+                val fps = buf.short
+                val bitrateKbps = buf.int
+                val encodeMs = buf.short
+                val latencyMs = buf.short
+                return Stats(fps, bitrateKbps, encodeMs, latencyMs)
+            }
+        }
+    }
+
     data class CandidateExchange(
         val candidates: List<IceCandidate>
     ) : WardMessage(MessageType.CANDIDATE_EXCHANGE) {

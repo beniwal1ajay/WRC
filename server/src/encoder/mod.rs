@@ -3,6 +3,8 @@
 //! Encodes raw frames (BGRx/BGRA) from PipeWire screen capture
 //! into standard H.264 Annex B NAL units (I-frames, P-frames) for network streaming.
 
+pub mod adaptive;
+
 use anyhow::{Context, Result};
 use openh264::OpenH264API;
 use openh264::encoder::{Encoder, EncoderConfig, FrameType};

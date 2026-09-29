@@ -126,17 +126,24 @@ class WardClient(
                     serverDeviceName = accepted.serverDeviceName
                 ))
 
-                // 4. Main message receiving loop
+                // 4. Main message receiving loop with real-time stats feedback
+                var frameCount = 0
+                var byteCount = 0L
+                var lastStatsReport = System.currentTimeMillis()
+
                 while (isRunning.get()) {
                     val header = transport.receiveHeader()
                     val payload = transport.receivePayload(header.payloadLen)
+                    byteCount += HEADER_SIZE + payload.size
 
                     when (header.type) {
                         MessageType.VIDEO_KEYFRAME -> {
+                            frameCount++
                             val kf = WardMessage.VideoKeyframe.parse(payload)
                             onVideoFrame(kf.data, kf.timestampNs, true)
                         }
                         MessageType.VIDEO_FRAME -> {
+                            frameCount++
                             val vf = WardMessage.VideoFrame.parse(payload)
                             onVideoFrame(vf.data, vf.timestampNs, false)
                         }
@@ -151,6 +158,23 @@ class WardClient(
                         else -> {
                             Log.d(TAG, "Received message type: ${header.type}")
                         }
+                    }
+
+                    val now = System.currentTimeMillis()
+                    val elapsed = now - lastStatsReport
+                    if (elapsed >= 1500) {
+                        val fps = ((frameCount * 1000L) / elapsed).toInt().toShort()
+                        val bitrateKbps = ((byteCount * 8L) / elapsed).toInt()
+                        val statsMsg = WardMessage.Stats(
+                            fps = fps,
+                            bitrateKbps = bitrateKbps,
+                            encodeMs = 0,
+                            latencyMs = 20
+                        )
+                        transport.sendInput(statsMsg)
+                        frameCount = 0
+                        byteCount = 0L
+                        lastStatsReport = now
                     }
                 }
             } catch (e: Exception) {

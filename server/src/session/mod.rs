@@ -184,6 +184,7 @@ pub async fn run_session(
 
     // Channel for client input events -> input dispatcher
     let (input_tx, mut input_rx) = mpsc::channel::<Message>(512);
+    let (telemetry_tx, mut telemetry_rx) = mpsc::channel::<(u16, u16)>(64);
     let keyframe_requested = Arc::new(AtomicBool::new(true)); // force keyframe on start
     let kf_req_clone = keyframe_requested.clone();
     let running_reader = running.clone();
@@ -197,8 +198,13 @@ pub async fn run_session(
                         debug!("Client requested keyframe");
                         kf_req_clone.store(true, Ordering::Relaxed);
                     }
+                    Message::Stats { fps, latency_ms, .. } => {
+                        debug!("Client stats: {} fps, latency {}ms", fps, latency_ms);
+                        let _ = telemetry_tx.try_send((latency_ms, fps));
+                    }
                     Message::Disconnect => {
                         info!("Client sent disconnect request");
+                        running_reader.store(false, Ordering::Relaxed);
                         break;
                     }
                     input_event => {
@@ -209,6 +215,7 @@ pub async fn run_session(
                 },
                 Err(e) => {
                     debug!("Client read error or disconnected: {:#}", e);
+                    running_reader.store(false, Ordering::Relaxed);
                     break;
                 }
             }
@@ -285,18 +292,44 @@ pub async fn run_session(
     });
 
     // 4. Video Streaming Loop: pipe captured frames -> encoder -> transport writer
-    info!("Streaming video to client via {}...", transport_type);
+    let initial_tier = match transport_type {
+        crate::transport::TransportType::Lan => crate::transport::selector::ConnectionTier::LanDirect,
+        crate::transport::TransportType::Vpn => crate::transport::selector::ConnectionTier::VpnDirect,
+        crate::transport::TransportType::DirectP2p => crate::transport::selector::ConnectionTier::P2pIce,
+        crate::transport::TransportType::Relay => crate::transport::selector::ConnectionTier::TurnRelay,
+    };
+    let mut rate_controller = crate::encoder::adaptive::AdaptiveVideoController::new(initial_tier);
+
+    info!("Streaming video to client via {} (adaptive profile: {} fps, target {} kbps)...",
+        transport_type, rate_controller.current_fps, rate_controller.current_bitrate_bps / 1000);
     let mut frames_sent: u64 = 0;
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
             biased;
 
+            telemetry_opt = telemetry_rx.recv() => {
+                match telemetry_opt {
+                    Some((latency_ms, client_fps)) => {
+                        rate_controller.on_network_feedback(latency_ms, client_fps);
+                    }
+                    None => {
+                        break;
+                    }
+                }
+            }
+
             frame_opt = frame_rx.recv() => {
                 match frame_opt {
                     Some(frame) => {
-                        if keyframe_requested.swap(false, Ordering::Relaxed) {
+                        let is_keyframe_req = keyframe_requested.swap(false, Ordering::Relaxed);
+                        if is_keyframe_req {
                             encoder.force_keyframe();
+                            rate_controller.on_loss_event();
+                        }
+
+                        if !is_keyframe_req && !rate_controller.should_encode_frame() {
+                            continue; // Pace frame transmission according to dynamic FPS target
                         }
 
                         let now_ns = std::time::SystemTime::now()

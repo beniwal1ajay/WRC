@@ -179,4 +179,22 @@ class WardProtocolTest {
         assertEquals(candidates[0], parsed.candidates[0])
         assertEquals(candidates[1], parsed.candidates[1])
     }
+
+    @Test
+    fun testStatsRoundtrip() {
+        val original = WardMessage.Stats(
+            fps = 60.toShort(),
+            bitrateKbps = 4500,
+            encodeMs = 3.toShort(),
+            latencyMs = 12.toShort()
+        )
+        val serialized = original.serialize()
+        assertEquals(10, serialized.size)
+
+        val parsed = WardMessage.Stats.parse(serialized)
+        assertEquals(60.toShort(), parsed.fps)
+        assertEquals(4500, parsed.bitrateKbps)
+        assertEquals(3.toShort(), parsed.encodeMs)
+        assertEquals(12.toShort(), parsed.latencyMs)
+    }
 }
