@@ -61,6 +61,7 @@ async fn main() -> Result<()> {
             println!();
             println!("COMMANDS:");
             println!("    stream [PORT]        Start the TLS 1.3 streaming server (default, port 9740)");
+            println!("    tls-test [PORT]      Start standalone TLS diagnostic listener (no Wayland required)");
             println!("    status               Show server identity and authorized client devices");
             println!("    devices              List all paired and authorized Android devices");
             println!("    unpair <DEVICE_ID>   Revoke authorization for a client device");
@@ -72,6 +73,35 @@ async fn main() -> Result<()> {
             println!("    -v, --version        Show WARD version");
             println!("    -h, --help           Show this help message");
             println!();
+            return Ok(());
+        }
+        "tls-test" | "--tls-test" => {
+            let port = args.get(2)
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(DEFAULT_PORT);
+
+            info!("Starting WARD Standalone TLS Diagnostic Listener on port {}", port);
+            info!("(No Wayland screen capture needed - purely verifying TLS 1.3 handshake)");
+            let server = WardServer::bind(port).await?;
+            let local_addr = server.local_addr()?;
+            info!("✅ TLS Diagnostic Server listening on {}", local_addr);
+            info!("Ready! Tap Connect on your Android phone (192.168.31.96) to test the TLS handshake...");
+
+            while let Ok((tls_stream, peer_addr)) = server.accept().await {
+                info!("🎉 Successfully completed TLS 1.3 handshake with {}!", peer_addr);
+                let (mut reader, _writer) = tokio::io::split(tls_stream);
+                match tokio::time::timeout(Duration::from_secs(3), ward_server::protocol::read_message(&mut reader)).await {
+                    Ok(Ok((header, msg))) => {
+                        info!("📩 Received initial message from {}: Header={:?}, Message={:?}", peer_addr, header, msg);
+                    }
+                    Ok(Err(e)) => {
+                        info!("Client disconnected or read error: {}", e);
+                    }
+                    Err(_) => {
+                        info!("Timeout waiting for protocol message (TLS handshake was 100% SUCCESSFUL!)");
+                    }
+                }
+            }
             return Ok(());
         }
         "-v" | "--version" | "version" => {

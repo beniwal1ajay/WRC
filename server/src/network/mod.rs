@@ -29,11 +29,18 @@ pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
     // Ensure ring crypto provider is installed
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let subject_alt_names = vec![
+    let mut subject_alt_names = vec![
         "localhost".to_string(),
         "127.0.0.1".to_string(),
+        "::1".to_string(),
         "ward-server".to_string(),
     ];
+    for (_name, ip) in list_network_interfaces() {
+        let ip_str = ip.to_string();
+        if !subject_alt_names.contains(&ip_str) {
+            subject_alt_names.push(ip_str);
+        }
+    }
 
     let certified_key = generate_simple_self_signed(subject_alt_names)
         .context("Failed to generate self-signed TLS certificate")?;
@@ -115,10 +122,58 @@ impl WardServer {
         let (tcp_stream, peer_addr) = self.listener.accept().await
             .context("Failed to accept TCP connection")?;
 
-        let tls_stream = self.acceptor.accept(tcp_stream).await
-            .context(format!("TLS handshake failed with {}", peer_addr))?;
+        tracing::info!("[TLS DIAG] Raw TCP connection accepted from: {}", peer_addr);
 
-        Ok((tls_stream, peer_addr))
+        // Non-destructive peek to inspect initial incoming TLS record
+        let mut peek_buf = [0u8; 512];
+        match tokio::time::timeout(std::time::Duration::from_millis(1500), tcp_stream.peek(&mut peek_buf)).await {
+            Ok(Ok(n)) if n >= 5 => {
+                let content_type = peek_buf[0];
+                let legacy_ver = u16::from_be_bytes([peek_buf[1], peek_buf[2]]);
+                let record_len = u16::from_be_bytes([peek_buf[3], peek_buf[4]]);
+                let handshake_type = if n >= 6 { Some(peek_buf[5]) } else { None };
+                tracing::info!(
+                    "[TLS DIAG] Client {}: Peeked {} bytes. ContentType=0x{:02x}, RecordVer=0x{:04x}, RecordLen={}, HandshakeType={:?}",
+                    peer_addr, n, content_type, legacy_ver, record_len, handshake_type
+                );
+                if content_type == 0x16 && handshake_type == Some(1) {
+                    tracing::info!("[TLS DIAG] Client {}: Valid TLS ClientHello record detected!", peer_addr);
+                } else {
+                    tracing::warn!("[TLS DIAG] Client {}: Non-ClientHello record header: {:02x?}", peer_addr, &peek_buf[..n.min(16)]);
+                }
+            }
+            Ok(Ok(n)) => {
+                tracing::warn!("[TLS DIAG] Client {}: Peeked only {} bytes before handshake (client closed connection or sent no data)", peer_addr, n);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("[TLS DIAG] Client {}: TCP peek error: {}", peer_addr, e);
+            }
+            Err(_) => {
+                tracing::warn!("[TLS DIAG] Client {}: Timeout waiting for initial bytes from client", peer_addr);
+            }
+        }
+
+        match self.acceptor.accept(tcp_stream).await {
+            Ok(tls_stream) => {
+                let (_, server_conn) = tls_stream.get_ref();
+                let protocol = server_conn.protocol_version().map(|v| format!("{:?}", v)).unwrap_or_else(|| "unknown".into());
+                let cipher = server_conn.negotiated_cipher_suite().map(|c| format!("{:?}", c.suite())).unwrap_or_else(|| "unknown".into());
+                let sni = server_conn.server_name().unwrap_or("none");
+                let alpn = server_conn.alpn_protocol().map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_else(|| "none".into());
+                tracing::info!(
+                    "[TLS DIAG] ✅ TLS Handshake SUCCESS with {}! Protocol={}, Cipher={}, SNI={}, ALPN={}",
+                    peer_addr, protocol, cipher, sni, alpn
+                );
+                Ok((tls_stream, peer_addr))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[TLS DIAG] ❌ TLS Handshake FAILED with {}: kind={:?}, error={:#}",
+                    peer_addr, e.kind(), e
+                );
+                Err(anyhow::anyhow!("TLS handshake failed with {}: {}", peer_addr, e))
+            }
+        }
     }
 }
 
