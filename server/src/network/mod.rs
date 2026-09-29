@@ -81,7 +81,24 @@ impl WardServer {
             .context("Failed to configure TLS")?;
         let acceptor = TlsAcceptor::from(tls_config);
 
-        info!("WARD Server listening on {} (TLS 1.3)", addr);
+        info!("============================================================");
+        info!("  [WARD NETWORK] Server active on port {}", port);
+        info!("  Available connection endpoints:");
+        for (iface, ip) in list_network_interfaces() {
+            let tag = if iface.starts_with("tailscale") {
+                "Tailscale VPN"
+            } else if iface.starts_with("wg") {
+                "WireGuard VPN"
+            } else if iface.starts_with("tun") {
+                "VPN Tunnel"
+            } else if iface == "lo" {
+                "Localhost"
+            } else {
+                "LAN / Wi-Fi"
+            };
+            info!("    - {:15}: {}:{} ({})", tag, ip, port, iface);
+        }
+        info!("============================================================");
 
         Ok(Self {
             listener,
@@ -103,6 +120,31 @@ impl WardServer {
 
         Ok((tls_stream, peer_addr))
     }
+}
+
+/// Query the host's active network interfaces (LAN, VPNs like Tailscale/WireGuard, loopback).
+pub fn list_network_interfaces() -> Vec<(String, std::net::IpAddr)> {
+    let mut interfaces = Vec::new();
+    #[cfg(unix)]
+    unsafe {
+        let mut ifaddrs_ptr = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifaddrs_ptr) == 0 && !ifaddrs_ptr.is_null() {
+            let mut curr = ifaddrs_ptr;
+            while !curr.is_null() {
+                let ifa = *curr;
+                if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_INET {
+                    let sa = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip_u32 = u32::from_be(sa.sin_addr.s_addr);
+                    let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::from(ip_u32));
+                    let name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned();
+                    interfaces.push((name, ip));
+                }
+                curr = ifa.ifa_next;
+            }
+            libc::freeifaddrs(ifaddrs_ptr);
+        }
+    }
+    interfaces
 }
 
 #[cfg(test)]

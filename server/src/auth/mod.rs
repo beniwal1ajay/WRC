@@ -7,8 +7,13 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use std::sync::{LazyLock, Mutex};
+
 pub const AUTH_METHOD_PIN: u16 = 1;
 pub const AUTH_METHOD_TOKEN: u16 = 2;
+
+static PENDING_PINS: LazyLock<Mutex<HashMap<String, (String, String, u64)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Representation of an authorized remote client device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +35,6 @@ pub struct AuthorizedClientsStore {
 pub struct AuthManager {
     store_path: PathBuf,
     store: AuthorizedClientsStore,
-    pending_pins: HashMap<String, (String, String, u64)>, // device_id -> (pin, token, timestamp)
 }
 
 impl AuthManager {
@@ -61,7 +65,6 @@ impl AuthManager {
         Ok(Self {
             store_path,
             store,
-            pending_pins: HashMap::new(),
         })
     }
 
@@ -85,6 +88,12 @@ impl AuthManager {
     /// Check if a client device ID is already authorized.
     pub fn is_authorized(&self, device_id: &str) -> bool {
         self.store.clients.contains_key(device_id)
+    }
+
+    /// Retrieve any active pairing PIN pending for a device.
+    pub fn get_pending_pin(device_id: &str) -> Option<String> {
+        let lock = PENDING_PINS.lock().unwrap();
+        lock.get(device_id).map(|(pin, _, _)| pin.clone())
     }
 
     /// Verify an existing client's auth token.
@@ -112,7 +121,7 @@ impl AuthManager {
         OsRng.fill_bytes(&mut token_bytes);
         let token = hex_encode(&token_bytes);
 
-        self.pending_pins.insert(
+        PENDING_PINS.lock().unwrap().insert(
             device_id.to_string(),
             (pin.clone(), token.clone(), current_timestamp()),
         );
@@ -134,14 +143,17 @@ impl AuthManager {
         device_name: &str,
         provided_pin: &str,
     ) -> Result<String> {
-        let (expected_pin, token, created_at) = match self.pending_pins.get(device_id) {
-            Some(pending) => pending.clone(),
-            None => bail!("No pending pairing request found for device ID {}", device_id),
+        let (expected_pin, token, created_at) = {
+            let lock = PENDING_PINS.lock().unwrap();
+            match lock.get(device_id) {
+                Some(pending) => pending.clone(),
+                None => bail!("No pending pairing request found for device ID {}", device_id),
+            }
         };
 
         // Expire PINs after 5 minutes (300 seconds)
         if current_timestamp().saturating_sub(created_at) > 300 {
-            self.pending_pins.remove(device_id);
+            PENDING_PINS.lock().unwrap().remove(device_id);
             bail!("Pairing PIN expired. Please reconnect to request a new PIN.");
         }
 
@@ -150,7 +162,7 @@ impl AuthManager {
         }
 
         // Successfully verified PIN! Save to authorized store
-        self.pending_pins.remove(device_id);
+        PENDING_PINS.lock().unwrap().remove(device_id);
         let client = AuthorizedClient {
             device_id: device_id.to_string(),
             device_name: device_name.to_string(),

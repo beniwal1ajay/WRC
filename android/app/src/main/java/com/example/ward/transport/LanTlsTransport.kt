@@ -53,8 +53,9 @@ class LanTlsTransport : WardTransport {
 
         val socket = sslContext.socketFactory.createSocket() as SSLSocket
         socket.tcpNoDelay = true
+        socket.keepAlive = true
         socket.soTimeout = 0 // Infinite read timeout for streaming
-        socket.connect(InetSocketAddress(host, port), 5000)
+        socket.connect(InetSocketAddress(host, port), 8000)
         socket.startHandshake()
 
         Log.i(TAG, "LAN TLS handshake successful: ${socket.session.protocol} (${socket.session.cipherSuite})")
