@@ -1,4 +1,5 @@
 pub mod lan;
+pub mod selector;
 
 use std::net::SocketAddr;
 use anyhow::Result;
@@ -9,6 +10,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub enum TransportType {
     /// Local Area Network (direct TLS 1.3 over TCP).
     Lan,
+    /// VPN tunnel (Tailscale, WireGuard direct TLS).
+    Vpn,
     /// Direct Peer-to-Peer over Internet (via STUN / ICE / QUIC).
     DirectP2p,
     /// Secure Encrypted Relay (when direct P2P fails due to symmetric NAT).
@@ -19,6 +22,7 @@ impl std::fmt::Display for TransportType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Lan => write!(f, "LAN"),
+            Self::Vpn => write!(f, "VPN"),
             Self::DirectP2p => write!(f, "P2P"),
             Self::Relay => write!(f, "Relay"),
         }
@@ -51,6 +55,7 @@ mod tests {
     #[test]
     fn test_transport_type_formatting() {
         assert_eq!(TransportType::Lan.to_string(), "LAN");
+        assert_eq!(TransportType::Vpn.to_string(), "VPN");
         assert_eq!(TransportType::DirectP2p.to_string(), "P2P");
         assert_eq!(TransportType::Relay.to_string(), "Relay");
     }

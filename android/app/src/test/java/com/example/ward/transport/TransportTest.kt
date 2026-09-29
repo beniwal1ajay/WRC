@@ -9,6 +9,7 @@ class TransportTest {
     @Test
     fun testTransportTypeDisplayNames() {
         assertEquals("LAN", TransportType.LAN.displayName)
+        assertEquals("VPN", TransportType.VPN.displayName)
         assertEquals("Direct P2P", TransportType.DIRECT_P2P.displayName)
         assertEquals("Relay", TransportType.RELAY.displayName)
     }
