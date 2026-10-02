@@ -293,6 +293,9 @@ async fn run_streaming_server(port: u16) -> Result<()> {
     // Shared active session running flag to allow Ctrl-C termination while keeping server listening on client disconnect
     let active_session_running: Arc<std::sync::Mutex<Option<Arc<AtomicBool>>>> = Arc::new(std::sync::Mutex::new(None));
 
+    // Shutdown signal channel
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
     // Catch Ctrl+C
     let ctrlc_running = running.clone();
     let ctrlc_session = active_session_running.clone();
@@ -303,6 +306,7 @@ async fn run_streaming_server(port: u16) -> Result<()> {
             if let Some(s) = ctrlc_session.lock().unwrap().as_ref() {
                 s.store(false, Ordering::Relaxed);
             }
+            let _ = shutdown_tx.send(true);
         }
     });
 
@@ -326,9 +330,9 @@ async fn run_streaming_server(port: u16) -> Result<()> {
                             Some(client_portal),
                             session_running,
                         ).await {
-                            warn!("Client session ended with error: {:#}", e);
+                            tracing::warn!("[DIAG] Connection closed for: {} with error: {:#}", peer_addr, e);
                         } else {
-                            info!("Client session closed cleanly");
+                            tracing::info!("[DIAG] Connection closed for: {} cleanly", peer_addr);
                         }
 
                         *active_session_running.lock().unwrap() = None;
@@ -337,15 +341,16 @@ async fn run_streaming_server(port: u16) -> Result<()> {
                     }
                     Err(e) => {
                         if running.load(Ordering::Relaxed) {
-                            warn!("Error accepting connection: {:#}", e);
+                            let err_str = format!("{:#}", e);
+                            if !err_str.contains("TCP reachability probe") {
+                                warn!("Error accepting connection: {:#}", e);
+                            }
                         }
                     }
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                if !running.load(Ordering::Relaxed) {
-                    break;
-                }
+            _ = shutdown_rx.changed() => {
+                break;
             }
         }
     }

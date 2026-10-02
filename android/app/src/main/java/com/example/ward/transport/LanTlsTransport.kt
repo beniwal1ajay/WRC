@@ -24,7 +24,8 @@ private const val TAG = "LanTlsTransport"
  * LAN Transport implementing TLS 1.3 over direct TCP socket with sequential FIFO input queue.
  */
 class LanTlsTransport : WardTransport {
-    override val transportType: TransportType = TransportType.LAN
+    override var transportType: TransportType = TransportType.LAN
+        private set
 
     private var sslSocket: SSLSocket? = null
     private var rawSocket: Socket? = null
@@ -42,17 +43,26 @@ class LanTlsTransport : WardTransport {
     override fun connect(host: String, port: Int) {
         if (isRunning.get()) return
 
-        Log.i(TAG, "[TLS DIAG] Starting LAN TLS connection to $host:$port...")
+        transportType = classifyTransportType(host)
+        Log.i(TAG, "[TLS DIAG] Starting $transportType connection to $host:$port...")
 
         // Robust ExtendedTrustManager covering all X509 validation callbacks (standard, socket-based, engine-based)
         val trustAllCerts = arrayOf<TrustManager>(object : X509ExtendedTrustManager() {
             override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {
+                val cert = chain?.firstOrNull()
+                val sans = try { cert?.subjectAlternativeNames?.map { it[1].toString() } } catch (_: Exception) { null }
+                Log.i(TAG, "[DIAG] Certificate validation: chain_len=${chain?.size}, authType=$authType, subject=${cert?.subjectDN}, issuer=${cert?.issuerDN}, SANs=$sans, result=ACCEPT")
+            }
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) {}
-            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) {
+                checkServerTrusted(chain, authType)
+            }
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?, engine: SSLEngine?) {}
-            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, engine: SSLEngine?) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, engine: SSLEngine?) {
+                checkServerTrusted(chain, authType)
+            }
         })
 
         // Use "TLS" as standard context protocol (supports TLS 1.2 and 1.3 across all Android versions)
@@ -61,22 +71,21 @@ class LanTlsTransport : WardTransport {
                 init(null, trustAllCerts, SecureRandom())
             }
         } catch (e: Exception) {
-            Log.w(TAG, "[TLS DIAG] SSLContext('TLS') init failed, falling back to default: ${e.message}")
+            Log.w(TAG, "[DIAG] SSLContext('TLS') init failed, falling back to default: ${e.message}")
             SSLContext.getInstance("Default").apply {
                 init(null, trustAllCerts, SecureRandom())
             }
         }
 
         // Step 1: Connect raw TCP socket first with explicit timeout
-        Log.i(TAG, "[TLS DIAG] Step 1: Establishing raw TCP socket to $host:$port...")
+        Log.i(TAG, "[ANDROID] Connecting raw TCP socket to $host:$port...")
         val tcpSocket = Socket()
         tcpSocket.tcpNoDelay = true
         tcpSocket.keepAlive = true
         tcpSocket.connect(InetSocketAddress(host, port), 8000)
-        Log.i(TAG, "[TLS DIAG] Step 1 SUCCESS: TCP connected to $host:$port from local ${tcpSocket.localSocketAddress}")
+        Log.i(TAG, "[ANDROID] TCP CONNECTED to $host:$port (local: ${tcpSocket.localSocketAddress})")
 
         // Step 2: Layer SSL on top with explicit host and port (ensures SNI is set properly)
-        Log.i(TAG, "[TLS DIAG] Step 2: Layering SSLSocket over TCP...")
         val socket = sslContext.socketFactory.createSocket(
             tcpSocket,
             host,
@@ -86,7 +95,8 @@ class LanTlsTransport : WardTransport {
 
         socket.tcpNoDelay = true
         socket.keepAlive = true
-        socket.soTimeout = 0 // Infinite read timeout for streaming
+        // Set explicit 10s timeout during handshake
+        socket.soTimeout = 10000
 
         // Ensure TLS 1.3 is enabled (with TLS 1.2 fallback)
         val supported = socket.supportedProtocols ?: emptyArray()
@@ -94,7 +104,6 @@ class LanTlsTransport : WardTransport {
         if (targetProtocols.isNotEmpty()) {
             socket.enabledProtocols = targetProtocols.toTypedArray()
         }
-        Log.i(TAG, "[TLS DIAG] Configured protocols: ${socket.enabledProtocols?.joinToString(", ")}")
 
         // Disable HTTPS endpoint identification (prevents hostname mismatch rejection on self-signed IP certs)
         val params = socket.sslParameters
@@ -102,14 +111,21 @@ class LanTlsTransport : WardTransport {
         socket.sslParameters = params
 
         // Step 3: Execute TLS handshake
-        Log.i(TAG, "[TLS DIAG] Step 3: Starting TLS handshake...")
+        Log.i(TAG, "[ANDROID] TLS HANDSHAKE BEGIN with $host:$port (protocols=${socket.enabledProtocols?.joinToString(",")})")
+        val handshakeStart = System.currentTimeMillis()
         try {
             socket.startHandshake()
-            Log.i(TAG, "[TLS DIAG] Step 3 SUCCESS! Protocol=${socket.session.protocol}, Cipher=${socket.session.cipherSuite}")
+            val elapsed = System.currentTimeMillis() - handshakeStart
+            Log.i(TAG, "[ANDROID] TLS HANDSHAKE SUCCESS with $host:$port (protocol=${socket.session.protocol}, cipher=${socket.session.cipherSuite}, elapsed=${elapsed}ms)")
+            // Restore infinite read timeout for continuous streaming
+            socket.soTimeout = 0
         } catch (e: Exception) {
-            Log.e(TAG, "[TLS DIAG] Step 3 FAILED: TLS handshake error: ${e.javaClass.simpleName} - ${e.message}", e)
+            val elapsed = System.currentTimeMillis() - handshakeStart
+            Log.e(TAG, "[ANDROID] TLS HANDSHAKE FAILURE with $host:$port after ${elapsed}ms: ${e.javaClass.name}: ${e.message}", e)
+            Log.e(TAG, "[ANDROID] TLS EXCEPTION: ${e.javaClass.name}: ${e.message}")
             try { socket.close() } catch (_: Exception) {}
             try { tcpSocket.close() } catch (_: Exception) {}
+            Log.i(TAG, "[ANDROID] SOCKET CLOSED for $host:$port (reason: TLS handshake failure)")
             throw e
         }
 
@@ -196,6 +212,6 @@ class LanTlsTransport : WardTransport {
             }
         } catch (_: Exception) {}
 
-        Log.i(TAG, "Disconnected LAN TLS transport")
+        Log.i(TAG, "[ANDROID] SOCKET CLOSED (reason: disconnect requested)")
     }
 }

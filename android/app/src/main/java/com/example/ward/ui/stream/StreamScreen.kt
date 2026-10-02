@@ -37,8 +37,11 @@ import com.example.ward.data.PairedDevice
 import com.example.ward.data.PairedDeviceStore
 import com.example.ward.decoder.VideoDecoder
 import com.example.ward.network.ConnectionState
+import com.example.ward.network.SessionStats
 import com.example.ward.network.WardClient
 import com.example.ward.protocol.WardMessage
+import com.example.ward.transport.TransportType
+import com.example.ward.transport.maskIpAddress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -157,6 +160,8 @@ fun WardRemoteApp() {
     var streamWidth by remember { mutableIntStateOf(1920) }
     var streamHeight by remember { mutableIntStateOf(1080) }
     var showShortcuts by remember { mutableStateOf(false) }
+    var sessionStats by remember { mutableStateOf<SessionStats?>(null) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     // Auto-contracting bar state & interaction timer
     var isBarCollapsed by remember { mutableStateOf(false) }
@@ -166,24 +171,27 @@ fun WardRemoteApp() {
     var videoDecoder: VideoDecoder? by remember { mutableStateOf(null) }
     var wardClient: WardClient? by remember { mutableStateOf(null) }
 
-    // Probe host reachability periodically when disconnected
+    // Probe host reachability periodically ONLY when idle in Disconnected state
     LaunchedEffect(host, portText, connectionState) {
-        if (connectionState !is ConnectionState.Connected) {
+        if (connectionState is ConnectionState.Disconnected) {
             val targetHost = host.trim()
             val targetPort = portText.toIntOrNull() ?: 9740
-            while (true) {
-                val reachable = withContext(Dispatchers.IO) {
-                    try {
-                        Socket().use { s ->
-                            s.connect(InetSocketAddress(targetHost, targetPort), 1200)
-                            true
+            if (targetHost.isNotEmpty()) {
+                while (connectionState is ConnectionState.Disconnected) {
+                    val reachable = withContext(Dispatchers.IO) {
+                        try {
+                            Socket().use { s ->
+                                s.soTimeout = 1000
+                                s.connect(InetSocketAddress(targetHost, targetPort), 1000)
+                                true
+                            }
+                        } catch (e: Exception) {
+                            false
                         }
-                    } catch (e: Exception) {
-                        false
                     }
+                    isOnline = reachable
+                    delay(10000)
                 }
-                isOnline = reachable
-                delay(4000)
             }
         }
     }
@@ -469,8 +477,21 @@ fun WardRemoteApp() {
                                     Text("◀", fontSize = 11.sp, color = Color.White)
                                 }
 
-                                // Stats: FPS and Resolution
+                                // Stats: FPS and Resolution & Transport Badge
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Surface(
+                                        color = if (sessionStats?.connectionType == TransportType.VPN) Color(0xFF0284C7) else Color(0xFF059669),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = sessionStats?.connectionType?.displayName ?: "LAN",
+                                            color = Color.White,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
                                     Text(
                                         text = "$fps FPS",
                                         color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
@@ -482,6 +503,23 @@ fun WardRemoteApp() {
                                         color = Color(0xFF94A3B8),
                                         fontSize = 9.sp
                                     )
+                                }
+
+                                // Diagnostics Toggle
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showDiagnostics = !showDiagnostics
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (showDiagnostics) Color(0xFF0284C7) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(30.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("📊", fontSize = 13.sp, color = Color.White)
                                 }
 
                                 HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp, modifier = Modifier.width(36.dp))
@@ -636,6 +674,18 @@ fun WardRemoteApp() {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                Surface(
+                                    color = if (sessionStats?.connectionType == TransportType.VPN) Color(0xFF0284C7) else Color(0xFF059669),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = sessionStats?.connectionType?.displayName ?: "LAN",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
                                 Text(
                                     text = "${streamWidth}x${streamHeight}",
                                     color = Color.White,
@@ -648,6 +698,22 @@ fun WardRemoteApp() {
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
+
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showDiagnostics = !showDiagnostics
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (showDiagnostics) Color(0xFF0284C7) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("📊 Diag", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
 
                                 // Direct Phone Keyboard Trigger
                                 Button(
@@ -742,6 +808,18 @@ fun WardRemoteApp() {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                Surface(
+                                    color = if (sessionStats?.connectionType == TransportType.VPN) Color(0xFF0284C7) else Color(0xFF059669),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = sessionStats?.connectionType?.displayName ?: "LAN",
+                                        color = Color.White,
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
                                 Text(text = "${streamWidth}x${streamHeight}", color = Color.White, fontSize = 11.sp)
                                 Text(
                                     text = "$fps FPS",
@@ -749,6 +827,14 @@ fun WardRemoteApp() {
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold
                                 )
+                                if (sessionStats != null && sessionStats!!.latencyMs > 0) {
+                                    Text(
+                                        text = "${sessionStats!!.latencyMs}ms",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                                 Text("▼", color = Color.White, fontSize = 10.sp)
                             }
                         }
@@ -838,6 +924,65 @@ fun WardRemoteApp() {
                                 actionButton("↑ Up") { sendKeysym(KEYSYM_UP) }
                                 actionButton("↓ Down") { sendKeysym(KEYSYM_DOWN) }
                                 actionButton("→ Right") { sendKeysym(KEYSYM_RIGHT) }
+                            }
+                        }
+                    }
+
+                    // 6. Diagnostics HUD Card Overlay
+                    AnimatedVisibility(
+                        visible = showDiagnostics,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier
+                            .align(if (isLandscape) Alignment.TopStart else Alignment.TopCenter)
+                            .padding(top = if (isLandscape) 16.dp else 70.dp, start = if (isLandscape) 64.dp else 16.dp, end = 16.dp)
+                    ) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xF20B1329)),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, Color(0x6638BDF8)),
+                            modifier = Modifier.width(280.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "📡 CONNECTION DIAGNOSTICS",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    IconButton(
+                                        onClick = { showDiagnostics = false },
+                                        modifier = Modifier.size(20.dp)
+                                    ) {
+                                        Text("✕", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                                    }
+                                }
+                                HorizontalDivider(color = Color(0x3338BDF8), thickness = 1.dp)
+
+                                DiagnosticRow("Connection type:", sessionStats?.connectionType?.displayName ?: "LAN", Color(0xFF34D399))
+                                DiagnosticRow(
+                                    "Remote address:",
+                                    sessionStats?.remoteAddressMasked ?: maskIpAddress(host, portText.toIntOrNull() ?: 9740),
+                                    Color.White
+                                )
+                                DiagnosticRow(
+                                    "Latency:",
+                                    "${sessionStats?.latencyMs ?: 0} ms",
+                                    if ((sessionStats?.latencyMs ?: 0) < 50) Color(0xFF10B981) else Color(0xFFF59E0B)
+                                )
+                                DiagnosticRow("Packet loss:", "${sessionStats?.packetLossPercent ?: 0}%", Color(0xFF10B981))
+                                DiagnosticRow("FPS:", "$fps", if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B))
+                                val bitrateMbps = (sessionStats?.bitrateKbps ?: 0) / 1000f
+                                DiagnosticRow("Bitrate:", String.format("%.2f Mbps", bitrateMbps), Color.White)
+                                DiagnosticRow("Resolution:", "${streamWidth}x${streamHeight}", Color(0xFF94A3B8))
                             }
                         }
                     }
@@ -1017,6 +1162,9 @@ fun WardRemoteApp() {
                                             val updated = deviceStore.updateFromSession(accepted, host.trim(), port)
                                             pairedDevice = updated
                                         },
+                                        onStatsUpdated = { stats ->
+                                            sessionStats = stats
+                                        },
                                         clientDeviceId = deviceStore.getOrCreateClientDeviceId(),
                                         authToken = deviceStore.getAuthToken(),
                                         onPinRequired = { callback ->
@@ -1192,3 +1340,16 @@ fun WardRemoteApp() {
         )
     }
 }
+
+@Composable
+private fun DiagnosticRow(label: String, value: String, valueColor: Color = Color.White) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = label, color = Color(0xFF94A3B8), fontSize = 12.sp)
+        Text(text = value, color = valueColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+

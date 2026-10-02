@@ -3,9 +3,7 @@ package com.example.ward.network
 import android.os.Build
 import android.util.Log
 import com.example.ward.protocol.*
-import com.example.ward.transport.LanTlsTransport
-import com.example.ward.transport.TransportType
-import com.example.ward.transport.WardTransport
+import com.example.ward.transport.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -28,6 +26,21 @@ sealed class ConnectionState {
         val reason: String
     ) : ConnectionState()
     data class Failed(val error: String) : ConnectionState()
+}
+
+/**
+ * Real-time connection diagnostics and telemetry.
+ */
+data class SessionStats(
+    val connectionType: TransportType = TransportType.LAN,
+    val remoteAddressMasked: String = "",
+    val latencyMs: Long = 0,
+    val packetLossPercent: Int = 0,
+    val fps: Int = 0,
+    val bitrateKbps: Int = 0
+) {
+    val bitrateMbps: Float
+        get() = bitrateKbps / 1000f
 }
 
 /**
@@ -67,6 +80,7 @@ class WardClient(
     private val onVideoFrame: (data: ByteArray, timestampNs: Long, isKeyframe: Boolean) -> Unit,
     private var transport: WardTransport = LanTlsTransport(),
     private val onSessionAccepted: ((WardMessage.SessionAccepted) -> Unit)? = null,
+    private val onStatsUpdated: ((SessionStats) -> Unit)? = null,
     private val clientDeviceId: ByteArray = ByteArray(32),
     private val authToken: String = "",
     private val onPinRequired: (((String) -> Unit) -> Unit)? = null,
@@ -97,7 +111,7 @@ class WardClient(
                     onStateChanged(ConnectionState.Connecting)
                 } else {
                     val delayMs = computeBackoffDelay(attempt)
-                    Log.i(TAG, "Reconnection attempt #$attempt scheduled in ${delayMs}ms ($lastFailureReason)...")
+                    Log.i(TAG, "[DIAG] Reconnect triggered for $targetHost:$targetPort (attempt #$attempt, delay=${delayMs}ms, reason: $lastFailureReason)")
                     onStateChanged(ConnectionState.Reconnecting(attempt, delayMs, lastFailureReason))
                     try {
                         Thread.sleep(delayMs)
@@ -136,7 +150,7 @@ class WardClient(
                     if (isUserCancelled.get()) break
                     attempt++
                     lastFailureReason = e.message ?: "Connection lost"
-                    Log.w(TAG, "Session interrupted ($lastFailureReason). Scheduling reconnect attempt #$attempt...")
+                    Log.i(TAG, "[ANDROID] RECONNECT SCHEDULED (attempt #$attempt, reason: $lastFailureReason)")
                 }
 
                 if (!autoReconnect || (maxReconnectAttempts in 1 until attempt)) {
@@ -154,7 +168,7 @@ class WardClient(
     }
 
     private fun runSession(host: String, port: Int) {
-        Log.i(TAG, "Initiating connection to $host:$port via ${transport.transportType}...")
+        Log.i(TAG, "[DIAG] Initiating connection to $host:$port via ${transport.transportType}...")
         transport.connect(host, port)
 
         // 1. Send CONNECTION_INIT
@@ -233,12 +247,24 @@ class WardClient(
             serverDeviceName = accepted.serverDeviceName
         ))
 
+        onStatsUpdated?.invoke(
+            SessionStats(
+                connectionType = transport.transportType,
+                remoteAddressMasked = maskIpAddress(host, port),
+                latencyMs = 0,
+                packetLossPercent = 0,
+                fps = 0,
+                bitrateKbps = 0
+            )
+        )
+
         // Immediately request keyframe to quickly initialize decoder surface upon reconnect
         requestKeyframe()
 
         // 4. Heartbeat telemetry and dead link detection thread
         val lastDataReceivedMs = AtomicLong(System.currentTimeMillis())
         val sessionActive = AtomicBoolean(true)
+        val currentRttMs = AtomicLong(0)
 
         val heartbeatThread = Thread({
             while (sessionActive.get() && !isUserCancelled.get()) {
@@ -295,6 +321,7 @@ class WardClient(
                         val pong = WardMessage.Pong.parse(msgPayload)
                         val rttNs = System.nanoTime() - pong.timestampNs
                         val rttMs = if (rttNs > 0) rttNs / 1_000_000 else 0
+                        currentRttMs.set(rttMs)
                         Log.d(TAG, "Heartbeat Pong acknowledged by host. RTT: ${rttMs}ms")
                     }
                     MessageType.DISCONNECT -> {
@@ -310,15 +337,27 @@ class WardClient(
                 val now = System.currentTimeMillis()
                 val elapsed = now - lastStatsReport
                 if (elapsed >= 1500) {
-                    val fps = ((frameCount * 1000L) / elapsed).toInt().toShort()
+                    val fps = ((frameCount * 1000L) / elapsed).toInt()
                     val bitrateKbps = ((byteCount * 8L) / elapsed).toInt()
                     val statsMsg = WardMessage.Stats(
-                        fps = fps,
+                        fps = fps.toShort(),
                         bitrateKbps = bitrateKbps,
                         encodeMs = 0,
-                        latencyMs = 20
+                        latencyMs = currentRttMs.get().coerceIn(0, 32767).toInt().toShort()
                     )
                     transport.sendInput(statsMsg)
+
+                    onStatsUpdated?.invoke(
+                        SessionStats(
+                            connectionType = transport.transportType,
+                            remoteAddressMasked = maskIpAddress(host, port),
+                            latencyMs = currentRttMs.get(),
+                            packetLossPercent = 0,
+                            fps = fps,
+                            bitrateKbps = bitrateKbps
+                        )
+                    )
+
                     frameCount = 0
                     byteCount = 0L
                     lastStatsReport = now
