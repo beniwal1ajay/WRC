@@ -179,6 +179,7 @@ pub enum Message {
         session_id: u32,
         server_device_id: [u8; 32],
         server_device_name: String,
+        auth_token: Option<String>,
     },
     SessionRejected {
         reason_code: u32,
@@ -298,12 +299,17 @@ impl Message {
                 buf.extend_from_slice(&(response.len() as u16).to_be_bytes());
                 buf.extend_from_slice(response);
             }
-            Self::SessionAccepted { session_id, server_device_id, server_device_name } => {
+            Self::SessionAccepted { session_id, server_device_id, server_device_name, auth_token } => {
                 buf.extend_from_slice(&session_id.to_be_bytes());
                 buf.extend_from_slice(server_device_id);
                 let name_bytes = server_device_name.as_bytes();
                 buf.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
                 buf.extend_from_slice(name_bytes);
+                if let Some(tok) = auth_token {
+                    let tok_bytes = tok.as_bytes();
+                    buf.extend_from_slice(&(tok_bytes.len() as u16).to_be_bytes());
+                    buf.extend_from_slice(tok_bytes);
+                }
             }
             Self::SessionRejected { reason_code, reason_message } => {
                 buf.extend_from_slice(&reason_code.to_be_bytes());
@@ -439,6 +445,7 @@ impl Message {
 
                 let mut server_device_id = [0u8; 32];
                 let mut server_device_name = String::new();
+                let mut auth_token = None;
 
                 if cur.read_exact(&mut server_device_id).is_ok() {
                     let mut u16_buf = [0u8; 2];
@@ -449,12 +456,21 @@ impl Message {
                             server_device_name = String::from_utf8_lossy(&name_buf).to_string();
                         }
                     }
+                    let mut u16_tok = [0u8; 2];
+                    if cur.read_exact(&mut u16_tok).is_ok() {
+                        let tok_len = u16::from_be_bytes(u16_tok) as usize;
+                        let mut tok_buf = vec![0u8; tok_len];
+                        if cur.read_exact(&mut tok_buf).is_ok() {
+                            auth_token = Some(String::from_utf8_lossy(&tok_buf).to_string());
+                        }
+                    }
                 }
 
                 Ok(Self::SessionAccepted {
                     session_id,
                     server_device_id,
                     server_device_name,
+                    auth_token,
                 })
             }
             MessageType::SessionRejected => {

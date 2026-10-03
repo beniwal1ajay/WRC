@@ -179,15 +179,22 @@ sealed class WardMessage(val type: MessageType) {
     data class SessionAccepted(
         val sessionId: Int,
         val serverDeviceId: ByteArray = ByteArray(32),
-        val serverDeviceName: String = "Ubuntu Host"
+        val serverDeviceName: String = "Ubuntu Host",
+        val authToken: String = ""
     ) : WardMessage(MessageType.SESSION_ACCEPTED) {
         override fun serialize(): ByteArray {
             val nameBytes = serverDeviceName.toByteArray(Charsets.UTF_8)
-            val buf = ByteBuffer.allocate(4 + 32 + 2 + nameBytes.size).order(ByteOrder.BIG_ENDIAN)
+            val tokenBytes = authToken.toByteArray(Charsets.UTF_8)
+            val totalSize = 4 + 32 + 2 + nameBytes.size + if (authToken.isNotEmpty()) 2 + tokenBytes.size else 0
+            val buf = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)
             buf.putInt(sessionId)
             buf.put(serverDeviceId)
             buf.putShort(nameBytes.size.toShort())
             buf.put(nameBytes)
+            if (authToken.isNotEmpty()) {
+                buf.putShort(tokenBytes.size.toShort())
+                buf.put(tokenBytes)
+            }
             return buf.array()
         }
 
@@ -197,6 +204,7 @@ sealed class WardMessage(val type: MessageType) {
             if (sessionId != other.sessionId) return false
             if (!serverDeviceId.contentEquals(other.serverDeviceId)) return false
             if (serverDeviceName != other.serverDeviceName) return false
+            if (authToken != other.authToken) return false
             return true
         }
 
@@ -204,6 +212,7 @@ sealed class WardMessage(val type: MessageType) {
             var result = sessionId
             result = 31 * result + serverDeviceId.contentHashCode()
             result = 31 * result + serverDeviceName.hashCode()
+            result = 31 * result + authToken.hashCode()
             return result
         }
 
@@ -214,16 +223,23 @@ sealed class WardMessage(val type: MessageType) {
                 if (data.size >= 36) {
                     val deviceId = ByteArray(32)
                     buf.get(deviceId)
-                    val name = if (data.size >= 38) {
+                    var name = "Ubuntu Host"
+                    var token = ""
+                    if (buf.remaining() >= 2) {
                         val nameLen = buf.short.toInt() and 0xFFFF
                         val actualLen = minOf(nameLen, buf.remaining())
                         val nameBytes = ByteArray(actualLen)
                         buf.get(nameBytes)
-                        String(nameBytes, Charsets.UTF_8)
-                    } else {
-                        "Ubuntu Host"
+                        name = String(nameBytes, Charsets.UTF_8)
                     }
-                    return SessionAccepted(sessionId, deviceId, name)
+                    if (buf.remaining() >= 2) {
+                        val tokenLen = buf.short.toInt() and 0xFFFF
+                        val actualTokenLen = minOf(tokenLen, buf.remaining())
+                        val tokenBytes = ByteArray(actualTokenLen)
+                        buf.get(tokenBytes)
+                        token = String(tokenBytes, Charsets.UTF_8)
+                    }
+                    return SessionAccepted(sessionId, deviceId, name, token)
                 }
                 return SessionAccepted(sessionId)
             }

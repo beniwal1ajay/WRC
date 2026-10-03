@@ -71,13 +71,20 @@ impl AdaptiveVideoController {
 
         let frame_interval = Duration::from_micros(1_000_000 / profile.max_fps as u64);
 
+        let min_fps = match tier {
+            ConnectionTier::LanDirect => 60,
+            ConnectionTier::VpnDirect => 45,
+            ConnectionTier::P2pIce => 30,
+            ConnectionTier::TurnRelay => 15,
+        };
+
         Self {
             tier,
             current_bitrate_bps: profile.bitrate_bps,
             min_bitrate_bps: min_bitrate,
             max_bitrate_bps: max_bitrate,
             current_fps: profile.max_fps,
-            min_fps: 15,
+            min_fps,
             max_fps: profile.max_fps,
             last_adaptation: Instant::now(),
             last_frame_sent: Instant::now(),
@@ -87,7 +94,7 @@ impl AdaptiveVideoController {
     }
 
     /// Update network telemetry metrics received from client (RTT, latency, reported FPS).
-    pub fn on_network_feedback(&mut self, latency_ms: u16, client_fps: u16) {
+    pub fn on_network_feedback(&mut self, latency_ms: u16, _client_fps: u16) {
         let rtt = latency_ms as f32;
         // EWMA smoothing
         self.smoothed_rtt_ms = 0.8 * self.smoothed_rtt_ms + 0.2 * rtt;
@@ -97,18 +104,31 @@ impl AdaptiveVideoController {
             return;
         }
 
-        if self.smoothed_rtt_ms > 200.0 || (client_fps > 0 && client_fps < (self.current_fps / 2) as u16) {
-            // Severe congestion: decrease bitrate by 30% and throttle FPS
-            let new_bitrate = ((self.current_bitrate_bps as f32) * 0.70) as u32;
+        // On LAN / VPN, maintain 60 FPS video smoothness without artificial throttling
+        if self.tier == ConnectionTier::LanDirect || self.tier == ConnectionTier::VpnDirect {
+            if self.smoothed_rtt_ms > 250.0 {
+                let new_bitrate = ((self.current_bitrate_bps as f32) * 0.85) as u32;
+                self.current_bitrate_bps = new_bitrate.max(self.min_bitrate_bps);
+                self.last_adaptation = now;
+            } else if self.smoothed_rtt_ms < 60.0 && self.current_bitrate_bps < self.max_bitrate_bps {
+                self.current_bitrate_bps = (self.current_bitrate_bps + 500_000).min(self.max_bitrate_bps);
+                self.last_adaptation = now;
+            }
+            return;
+        }
+
+        if self.smoothed_rtt_ms > 250.0 {
+            // Severe congestion on WAN/Relay: decrease bitrate by 25% and step down FPS
+            let new_bitrate = ((self.current_bitrate_bps as f32) * 0.75) as u32;
             self.current_bitrate_bps = new_bitrate.max(self.min_bitrate_bps);
-            self.current_fps = (self.current_fps.saturating_sub(15)).max(self.min_fps);
+            self.current_fps = (self.current_fps.saturating_sub(10)).max(self.min_fps);
             self.update_frame_interval();
             self.last_adaptation = now;
             info!(
                 "AdaptiveVideo: Congestion detected (RTT {:.1}ms)! Decreased bitrate to {} kbps, FPS to {}",
                 self.smoothed_rtt_ms, self.current_bitrate_bps / 1000, self.current_fps
             );
-        } else if self.smoothed_rtt_ms > 100.0 {
+        } else if self.smoothed_rtt_ms > 120.0 {
             // Mild congestion: decrease bitrate by 15%
             let new_bitrate = ((self.current_bitrate_bps as f32) * 0.85) as u32;
             self.current_bitrate_bps = new_bitrate.max(self.min_bitrate_bps);

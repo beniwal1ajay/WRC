@@ -8,7 +8,38 @@ pub mod adaptive;
 use anyhow::{Context, Result};
 use openh264::OpenH264API;
 use openh264::encoder::{Encoder, EncoderConfig, FrameType};
-use openh264::formats::YUVBuffer;
+use openh264::formats::YUVSource;
+
+/// Zero-copy borrow of planar YUV420 data implementing OpenH264's YUVSource trait.
+struct BorrowedYuv<'a> {
+    y: &'a [u8],
+    u: &'a [u8],
+    v: &'a [u8],
+    width: usize,
+    height: usize,
+}
+
+impl<'a> YUVSource for BorrowedYuv<'a> {
+    fn dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    fn strides(&self) -> (usize, usize, usize) {
+        (self.width, self.width / 2, self.width / 2)
+    }
+
+    fn y(&self) -> &[u8] {
+        self.y
+    }
+
+    fn u(&self) -> &[u8] {
+        self.u
+    }
+
+    fn v(&self) -> &[u8] {
+        self.v
+    }
+}
 use tracing::{debug, info};
 
 /// An encoded video packet ready for transmission.
@@ -115,11 +146,18 @@ impl VideoEncoder {
             &mut self.yuv_buffer,
         );
 
-        let yuv_source = YUVBuffer::from_vec(
-            self.yuv_buffer.clone(),
-            self.width,
-            self.height,
-        );
+        let y_len = self.width * self.height;
+        let uv_len = (self.width / 2) * (self.height / 2);
+        let (y_plane, rest) = self.yuv_buffer.split_at(y_len);
+        let (u_plane, v_plane) = rest.split_at(uv_len);
+
+        let yuv_source = BorrowedYuv {
+            y: y_plane,
+            u: u_plane,
+            v: v_plane,
+            width: self.width,
+            height: self.height,
+        };
 
         let bitstream = self.encoder.encode(&yuv_source)
             .context("OpenH264 encode failed")?;
@@ -160,43 +198,65 @@ pub fn bgrx_to_yuv420p(
     yuv: &mut [u8],
 ) {
     let y_plane_size = width * height;
-    let u_plane_size = (width / 2) * (height / 2);
+    let uv_plane_size = (width / 2) * (height / 2);
     let (y_plane, rest) = yuv.split_at_mut(y_plane_size);
-    let (u_plane, v_plane) = rest.split_at_mut(u_plane_size);
+    let (u_plane, v_plane) = rest.split_at_mut(uv_plane_size);
 
-    for y in 0..height {
-        let row_start = y * stride;
-        let y_row_start = y * width;
-        let is_even_row = (y & 1) == 0;
-        let uv_row_start = (y / 2) * (width / 2);
+    let half_w = width / 2;
+    let half_h = height / 2;
 
-        for x in 0..width {
-            let pixel_idx = row_start + x * 4;
-            if pixel_idx + 2 >= bgrx.len() {
+    for y_pair in 0..half_h {
+        let y0 = y_pair * 2;
+        let y1 = y0 + 1;
+
+        let row0_offset = y0 * stride;
+        let row1_offset = y1 * stride;
+
+        let y0_offset = y0 * width;
+        let y1_offset = y1 * width;
+        let uv_offset = y_pair * half_w;
+
+        for x_pair in 0..half_w {
+            let x0 = x_pair * 2;
+            let x1 = x0 + 1;
+
+            let p0 = row0_offset + x0 * 4;
+            let p1 = row0_offset + x1 * 4;
+            let p2 = row1_offset + x0 * 4;
+            let p3 = row1_offset + x1 * 4;
+
+            if p3 + 2 >= bgrx.len() {
                 break;
             }
 
-            let b = bgrx[pixel_idx] as i32;
-            let g = bgrx[pixel_idx + 1] as i32;
-            let r = bgrx[pixel_idx + 2] as i32;
+            let b0 = bgrx[p0] as i32;
+            let g0 = bgrx[p0 + 1] as i32;
+            let r0 = bgrx[p0 + 2] as i32;
 
-            // Y = ((66 * R + 129 * G + 25 * B + 128) >> 8) + 16
-            let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y_plane[y_row_start + x] = y_val.clamp(16, 235) as u8;
+            let b1 = bgrx[p1] as i32;
+            let g1 = bgrx[p1 + 1] as i32;
+            let r1 = bgrx[p1 + 2] as i32;
 
-            // Compute U and V for 2x2 blocks on even row/col
-            if is_even_row && (x & 1) == 0 {
-                let uv_idx = uv_row_start + (x / 2);
-                if uv_idx < u_plane.len() && uv_idx < v_plane.len() {
-                    // U = ((-38 * R - 74 * G + 112 * B + 128) >> 8) + 128
-                    let u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                    // V = ((112 * R - 94 * G - 18 * B + 128) >> 8) + 128
-                    let v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+            let b2 = bgrx[p2] as i32;
+            let g2 = bgrx[p2 + 1] as i32;
+            let r2 = bgrx[p2 + 2] as i32;
 
-                    u_plane[uv_idx] = u_val.clamp(16, 240) as u8;
-                    v_plane[uv_idx] = v_val.clamp(16, 240) as u8;
-                }
-            }
+            let b3 = bgrx[p3] as i32;
+            let g3 = bgrx[p3 + 1] as i32;
+            let r3 = bgrx[p3 + 2] as i32;
+
+            y_plane[y0_offset + x0] = (((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16).clamp(16, 235) as u8;
+            y_plane[y0_offset + x1] = (((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16).clamp(16, 235) as u8;
+            y_plane[y1_offset + x0] = (((66 * r2 + 129 * g2 + 25 * b2 + 128) >> 8) + 16).clamp(16, 235) as u8;
+            y_plane[y1_offset + x1] = (((66 * r3 + 129 * g3 + 25 * b3 + 128) >> 8) + 16).clamp(16, 235) as u8;
+
+            let r_avg = (r0 + r1 + r2 + r3 + 2) >> 2;
+            let g_avg = (g0 + g1 + g2 + g3 + 2) >> 2;
+            let b_avg = (b0 + b1 + b2 + b3 + 2) >> 2;
+
+            let uv_idx = uv_offset + x_pair;
+            u_plane[uv_idx] = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
+            v_plane[uv_idx] = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
         }
     }
 }

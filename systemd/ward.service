@@ -6,7 +6,7 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/ward-server stream
+ExecStart=%h/.local/bin/ward-server host
 Restart=on-failure
 RestartSec=3s
 Environment=RUST_BACKTRACE=1

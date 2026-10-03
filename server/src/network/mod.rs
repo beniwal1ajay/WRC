@@ -58,7 +58,19 @@ pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
     Ok(Arc::new(server_config))
 }
 
-/// Run the WARD streaming server session for a single connected client.
+/// Run the WARD streaming server session for a single connected client using an InputSink.
+pub async fn handle_client_session_with_sink(
+    stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    peer_addr: SocketAddr,
+    frame_rx: mpsc::Receiver<CapturedFrame>,
+    input_sink: Option<crate::portal::InputSink>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    let transport_stream = Box::new(crate::transport::lan::LanTransportStream::new(stream, peer_addr));
+    crate::session::run_session(transport_stream, frame_rx, input_sink, running).await
+}
+
+/// Run the WARD streaming server session for a single connected client (backwards-compatible with RemoteDesktopPortal).
 pub async fn handle_client_session(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
@@ -67,7 +79,7 @@ pub async fn handle_client_session(
     running: Arc<AtomicBool>,
 ) -> Result<()> {
     let transport_stream = Box::new(crate::transport::lan::LanTransportStream::new(stream, peer_addr));
-    crate::session::run_session(transport_stream, frame_rx, portal, running).await
+    crate::session::run_session_with_portal(transport_stream, frame_rx, portal, running).await
 }
 
 /// Standalone TLS Server Listener.
@@ -122,7 +134,9 @@ impl WardServer {
         let (tcp_stream, peer_addr) = self.listener.accept().await
             .context("Failed to accept TCP connection")?;
 
-        tracing::info!("[DIAG] TCP accepted from: {}", peer_addr);
+        let _ = tcp_stream.set_nodelay(true);
+
+        tracing::info!("[DIAG] TCP accepted from: {} (TCP_NODELAY enabled)", peer_addr);
 
         tracing::info!("[DIAG] TLS handshake BEGIN for: {}", peer_addr);
         tracing::info!("[DIAG] TLS handshake AWAIT for: {}", peer_addr);

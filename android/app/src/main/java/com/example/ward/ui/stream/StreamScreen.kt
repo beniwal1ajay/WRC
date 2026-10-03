@@ -999,6 +999,23 @@ fun WardRemoteApp() {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
+                    // WARD Header
+                    Text(
+                        text = "WARD",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White,
+                        letterSpacing = 2.sp
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "My Computers",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF38BDF8)
+                    )
+                    Spacer(modifier = Modifier.height(18.dp))
+
                     Card(
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF141824)),
                         shape = RoundedCornerShape(24.dp),
@@ -1031,7 +1048,7 @@ fun WardRemoteApp() {
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "Wayland Host • Persistent Identity",
+                                    text = "Wayland Host • Unattended Remote Desktop",
                                     fontSize = 12.sp,
                                     color = Color(0xFF94A3B8)
                                 )
@@ -1169,6 +1186,9 @@ fun WardRemoteApp() {
                                         authToken = deviceStore.getAuthToken(),
                                         onPinRequired = { callback ->
                                             pendingPinCallback = callback
+                                        },
+                                        onTokenInvalidated = {
+                                            deviceStore.saveAuthToken("")
                                         }
                                     )
                                     wardClient = client
@@ -1196,7 +1216,7 @@ fun WardRemoteApp() {
                                     Spacer(modifier = Modifier.width(12.dp))
                                     Text("Reconnecting (#${state.attempt})...", fontSize = 14.sp, color = Color(0xFFFDE68A))
                                 } else {
-                                    Text("Connect to ${pairedDevice.deviceName}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text("CONNECT", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp, color = Color.White)
                                 }
                             }
 
@@ -1209,12 +1229,12 @@ fun WardRemoteApp() {
                                 }
                             }
 
-                            // Collapsible Settings for Manual IP / Port
+                            // Collapsible Settings for Manual IP / Port (Developer Options)
                             TextButton(
                                 onClick = { showManualSettings = !showManualSettings }
                             ) {
                                 Text(
-                                    text = if (showManualSettings) "▲ Hide Address Settings" else "▼ Edit Address / Port",
+                                    text = if (showManualSettings) "▲ Hide Developer Settings" else "▼ Developer Options (IP & Port)",
                                     color = Color(0xFF94A3B8),
                                     fontSize = 12.sp
                                 )
@@ -1279,13 +1299,13 @@ fun WardRemoteApp() {
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("🔐", fontSize = 20.sp)
-                    Text("Host Pairing PIN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Permanent Host PIN", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 }
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        "Enter the 6-digit PIN displayed on your Ubuntu PC for '${pairedDevice.deviceName}':",
+                        "Enter the permanent PIN configured for '${pairedDevice.deviceName}':",
                         color = Color(0xFFCBD5E1),
                         fontSize = 13.sp
                     )
@@ -1322,7 +1342,7 @@ fun WardRemoteApp() {
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Verify & Pair", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Authenticate & Connect", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {

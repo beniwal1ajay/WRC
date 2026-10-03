@@ -182,7 +182,9 @@ impl Drop for HostIdentity {
 
 /// Default path: ~/.config/ward/identity.json
 pub fn default_identity_path() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
+    if let Some(cfg) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+        cfg.join("ward").join("identity.json")
+    } else if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(".config").join("ward").join("identity.json")
     } else {
         PathBuf::from(".config").join("ward").join("identity.json")

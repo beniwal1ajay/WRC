@@ -131,13 +131,21 @@ class PairedDeviceStore(context: Context) {
             DEFAULT_DEVICE_NAME
         }
 
+        val token = if (accepted.authToken.isNotBlank()) {
+            saveAuthToken(accepted.authToken)
+            accepted.authToken
+        } else {
+            getAuthToken()
+        }
+
         val updated = PairedDevice(
             deviceId = deviceIdHex,
             deviceName = deviceName,
             publicKeyHex = deviceIdHex,
             lastKnownHost = host,
             lastKnownPort = port,
-            isPaired = true
+            isPaired = true,
+            authToken = token
         )
         savePairedDevice(updated)
         return updated

@@ -28,6 +28,8 @@ sealed class ConnectionState {
     data class Failed(val error: String) : ConnectionState()
 }
 
+class AuthenticationException(message: String) : Exception(message)
+
 /**
  * Real-time connection diagnostics and telemetry.
  */
@@ -84,6 +86,7 @@ class WardClient(
     private val clientDeviceId: ByteArray = ByteArray(32),
     private val authToken: String = "",
     private val onPinRequired: (((String) -> Unit) -> Unit)? = null,
+    private val onTokenInvalidated: (() -> Unit)? = null,
     private val candidateEndpointsProvider: (() -> List<CandidateEndpoint>)? = null,
     private val autoReconnect: Boolean = true,
     private val maxReconnectAttempts: Int = 10,
@@ -148,6 +151,11 @@ class WardClient(
                     lastFailureReason = "Server closed connection"
                 } catch (e: Exception) {
                     if (isUserCancelled.get()) break
+                    if (e is AuthenticationException) {
+                        Log.e(TAG, "Authentication failed: ${e.message}")
+                        onStateChanged(ConnectionState.Failed(e.message ?: "Authentication failed"))
+                        break
+                    }
                     attempt++
                     lastFailureReason = e.message ?: "Connection lost"
                     Log.i(TAG, "[ANDROID] RECONNECT SCHEDULED (attempt #$attempt, reason: $lastFailureReason)")
@@ -186,7 +194,7 @@ class WardClient(
         var header = transport.receiveHeader()
         var payload = transport.receivePayload(header.payloadLen)
 
-        if (header.type == MessageType.AUTH_REQUEST) {
+        while (header.type == MessageType.AUTH_REQUEST) {
             val authReq = WardMessage.AuthRequest.parse(payload)
             Log.i(TAG, "Received AUTH_REQUEST: method=${authReq.authMethod}")
 
@@ -196,7 +204,7 @@ class WardClient(
                 val resp = WardMessage.AuthResponse(2.toShort(), authToken.toByteArray(Charsets.UTF_8))
                 transport.sendInput(resp)
             } else if (authReq.authMethod == 1.toShort()) {
-                // First-time PIN pairing challenge
+                // PIN pairing challenge
                 Log.i(TAG, "PIN pairing required by host")
                 val pinFuture = java.util.concurrent.CompletableFuture<String>()
                 if (onPinRequired != null) {
@@ -217,7 +225,10 @@ class WardClient(
 
         if (header.type == MessageType.SESSION_REJECTED) {
             val rejected = WardMessage.SessionRejected.parse(payload)
-            throw IllegalStateException("Session rejected (${rejected.reasonCode}): ${rejected.reasonMessage}")
+            if (rejected.reasonCode == 2) {
+                onTokenInvalidated?.invoke()
+            }
+            throw AuthenticationException("Session rejected (${rejected.reasonCode}): ${rejected.reasonMessage}")
         }
 
         if (header.type != MessageType.SESSION_ACCEPTED) {

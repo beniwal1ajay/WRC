@@ -12,15 +12,16 @@ use tracing::{debug, info, warn};
 
 use crate::capture::pipewire_capture::CapturedFrame;
 use crate::encoder::{EncoderSettings, VideoEncoder};
+use crate::portal::InputSink;
 use crate::portal::remote_desktop::{ButtonState, RemoteDesktopPortal, buttons};
 use crate::protocol::{self, Message};
 use crate::transport::TransportStream;
 
-/// Run a streaming remote desktop session over any abstract TransportStream.
+/// Run a streaming remote desktop session over any abstract TransportStream with an InputSink.
 pub async fn run_session(
     stream: Box<dyn TransportStream>,
     mut frame_rx: mpsc::Receiver<CapturedFrame>,
-    portal: Option<Arc<tokio::sync::Mutex<RemoteDesktopPortal>>>,
+    input_sink: Option<InputSink>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
     let transport_type = stream.transport_type();
@@ -59,11 +60,29 @@ pub async fn run_session(
         }
     };
 
+    let mut assigned_token = None;
+
     // 2. Client Authentication & Pairing Verification
     let is_zero_device_id = client_device_id_bytes.iter().all(|&b| b == 0);
     if !is_zero_device_id {
         let device_id_hex: String = client_device_id_bytes.iter().map(|b| format!("{:02x}", b)).collect();
         if let Ok(mut auth_mgr) = crate::auth::AuthManager::load_default() {
+            // Check if host is enabled
+            if let Some(config) = auth_mgr.host_config() {
+                if !config.host_enabled {
+                    warn!("[WARD AUTH] Host is disabled by administrator. Rejecting client '{}'", client_device_name);
+                    let rejected = Message::SessionRejected {
+                        reason_code: 0x0003,
+                        reason_message: "WARD Host is disabled by administrator".to_string(),
+                    };
+                    let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                    let _ = protocol::write_message(&mut writer, &rejected, seq).await;
+                    return Ok(());
+                }
+            }
+
+            let mut authenticated = false;
+
             if auth_mgr.is_authorized(&device_id_hex) {
                 // Client is already paired: verify auth token
                 let auth_req = Message::AuthRequest {
@@ -90,39 +109,23 @@ pub async fn run_session(
                     _ => false,
                 };
 
-                if !token_valid {
-                    warn!("Client '{}' failed token authentication", client_device_name);
-                    let rejected = Message::SessionRejected {
-                        reason_code: 0x0002,
-                        reason_message: "Invalid authentication token".to_string(),
-                    };
-                    let seq = sequence.fetch_add(1, Ordering::Relaxed);
-                    let _ = protocol::write_message(&mut writer, &rejected, seq).await;
-                    return Ok(());
+                if token_valid {
+                    info!("Client '{}' successfully authenticated via saved token", client_device_name);
+                    authenticated = true;
+                } else {
+                    warn!("[WARD AUTH] Client '{}' failed token authentication; removing stale token and challenging for permanent PIN", client_device_name);
+                    let _ = auth_mgr.remove_authorized_client(&device_id_hex);
                 }
-                info!("Client '{}' successfully authenticated via saved token", client_device_name);
-            } else {
-                // Client is not yet paired: generate 6-digit PIN and challenge client
-                let (pin, _token) = auth_mgr.generate_pairing_pin(&device_id_hex, &client_device_name);
-                info!("============================================================");
-                info!("🔑 NEW PAIRING REQUEST FROM: '{}'", client_device_name);
-                info!("🔑 DEVICE ID: {}", device_id_hex);
-                info!("🔑 PAIRING PIN: [{}]", pin);
-                info!("============================================================");
+            }
 
-                // Spawn non-blocking desktop notification
-                let dev_name = client_device_name.clone();
-                let pin_clone = pin.clone();
-                std::thread::spawn(move || {
-                    let _ = std::process::Command::new("notify-send")
-                        .arg("-u")
-                        .arg("critical")
-                        .arg("-a")
-                        .arg("WARD Remote Desktop")
-                        .arg(format!("Pairing PIN for {}", dev_name))
-                        .arg(format!("Enter PIN on Android: {}", pin_clone))
-                        .status();
-                });
+            if !authenticated {
+                // Client is not yet paired (or token was invalid): challenge client with permanent PIN (or test pairing PIN)
+                let is_test_pending = crate::auth::AuthManager::get_pending_pin(&device_id_hex).is_some();
+                if !is_test_pending {
+                    let _ = auth_mgr.generate_pairing_pin(&device_id_hex, &client_device_name);
+                }
+
+                info!("[WARD AUTH] Client '{}' ({}) requested connection - challenging for PIN", client_device_name, device_id_hex);
 
                 let auth_req = Message::AuthRequest {
                     auth_method: crate::auth::AUTH_METHOD_PIN,
@@ -140,29 +143,38 @@ pub async fn run_session(
                 .context("Timed out waiting for AuthResponse PIN")?
                 .context("Failed to read AuthResponse PIN")?;
 
-                let pin_res = match auth_resp {
+                let provided_pin = match auth_resp {
                     Message::AuthResponse { auth_method, response } if auth_method == crate::auth::AUTH_METHOD_PIN => {
-                        let pin_str = String::from_utf8_lossy(&response);
-                        auth_mgr.verify_pairing_pin(&device_id_hex, &client_device_name, pin_str.trim())
+                        String::from_utf8_lossy(&response).trim().to_string()
                     }
-                    _ => Err(anyhow::anyhow!("Unexpected response to PIN auth request")),
-                };
-
-                match pin_res {
-                    Ok(_assigned_token) => {
-                        info!("Client '{}' successfully paired with PIN!", client_device_name);
-                    }
-                    Err(e) => {
-                        warn!("Client '{}' failed PIN verification: {}", client_device_name, e);
+                    _ => {
+                        warn!("Client failed to provide PIN response");
                         let rejected = Message::SessionRejected {
                             reason_code: 0x0001,
-                            reason_message: format!("Pairing failed: {}", e),
+                            reason_message: "Expected AuthResponse with permanent PIN".to_string(),
                         };
                         let seq = sequence.fetch_add(1, Ordering::Relaxed);
                         let _ = protocol::write_message(&mut writer, &rejected, seq).await;
                         return Ok(());
                     }
-                }
+                };
+
+                assigned_token = match auth_mgr.verify_permanent_pin(&device_id_hex, &client_device_name, &provided_pin) {
+                    Ok(token) => {
+                        info!("[WARD AUTH] Client '{}' ({}) successfully authenticated with permanent PIN", client_device_name, device_id_hex);
+                        Some(token)
+                    }
+                    Err(e) => {
+                        warn!("[WARD AUTH] Client '{}' failed permanent PIN verification: {:#}", client_device_name, e);
+                        let rejected = Message::SessionRejected {
+                            reason_code: 0x0001,
+                            reason_message: format!("Authentication failed: {}", e),
+                        };
+                        let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                        let _ = protocol::write_message(&mut writer, &rejected, seq).await;
+                        return Ok(());
+                    }
+                };
             }
         }
     }
@@ -180,6 +192,7 @@ pub async fn run_session(
         session_id: 1,
         server_device_id: host_identity.public_key_bytes(),
         server_device_name: host_identity.device_name.clone(),
+        auth_token: assigned_token,
     };
     let seq = sequence.fetch_add(1, Ordering::Relaxed);
     protocol::write_message(&mut writer, &accepted, seq).await
@@ -220,26 +233,25 @@ pub async fn run_session(
                         debug!("Client requested keyframe");
                         kf_req_clone.store(true, Ordering::Relaxed);
                     }
-                    Message::Stats { fps, latency_ms, .. } => {
-                        debug!("Client stats: {} fps, latency {}ms", fps, latency_ms);
-                        let _ = telemetry_tx.try_send((latency_ms, fps));
-                    }
                     Message::Ping { timestamp_ns } => {
-                        debug!("Received Heartbeat Ping from client ({}ns)", timestamp_ns);
-                        let _ = outbound_tx_reader.try_send(Message::Pong { timestamp_ns });
+                        let pong = Message::Pong { timestamp_ns };
+                        let _ = outbound_tx_reader.try_send(pong);
                     }
                     Message::Pong { timestamp_ns } => {
                         let now_ns = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos() as u64;
-                        let rtt_ms = if now_ns > timestamp_ns {
+                        let rtt_ms = if now_ns >= timestamp_ns {
                             ((now_ns - timestamp_ns) / 1_000_000) as u16
                         } else {
                             0
                         };
-                        debug!("Received Heartbeat Pong from client, RTT: {}ms", rtt_ms);
+                        debug!("Received Pong from client, RTT: {}ms", rtt_ms);
                         let _ = telemetry_tx.try_send((rtt_ms, 0));
+                    }
+                    Message::Stats { fps, latency_ms, .. } => {
+                        let _ = telemetry_tx.try_send((latency_ms, fps));
                     }
                     Message::Disconnect => {
                         info!("Client sent disconnect request");
@@ -261,8 +273,8 @@ pub async fn run_session(
         }
     });
 
-    // Spawn input dispatcher task (injects events via RemoteDesktop portal)
-    let portal_clone = portal.clone();
+    // Spawn input dispatcher task (injects events via InputSink)
+    let sink_clone = input_sink.clone();
     let running_input = running.clone();
     let input_dispatcher = tokio::spawn(async move {
         let mut pressed_keys: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -270,11 +282,10 @@ pub async fn run_session(
         while running_input.load(Ordering::Relaxed) {
             match input_rx.recv().await {
                 Some(msg) => {
-                    if let Some(ref p_lock) = portal_clone {
-                        let p = p_lock.lock().await;
+                    if let Some(ref sink) = sink_clone {
                         match msg {
                             Message::MouseMove { x, y } => {
-                                let _ = p.notify_pointer_motion(x as f64, y as f64).await;
+                                let _ = sink.notify_pointer_motion(x as f64, y as f64).await;
                             }
                             Message::MouseButton { button, state } => {
                                 let btn_code = match button {
@@ -284,28 +295,28 @@ pub async fn run_session(
                                     _ => buttons::BTN_LEFT,
                                 };
                                 let btn_state = if state == 1 { ButtonState::Pressed } else { ButtonState::Released };
-                                let _ = p.notify_pointer_button(btn_code, btn_state).await;
+                                let _ = sink.notify_pointer_button(btn_code, btn_state).await;
                             }
                             Message::MouseScroll { dy, .. } => {
                                 let steps = if dy > 0.0 { -1 } else { 1 };
-                                let _ = p.notify_pointer_axis_discrete(0, steps).await;
+                                let _ = sink.notify_pointer_axis_discrete(0, steps).await;
                             }
                             Message::KeyDown { keycode } => {
                                 pressed_keys.insert(keycode);
                                 if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
                                     let keysym = (keycode & 0x7FFF_FFFF) as i32;
-                                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Pressed).await;
+                                    let _ = sink.notify_keyboard_keysym(keysym, ButtonState::Pressed).await;
                                 } else {
-                                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Pressed).await;
+                                    let _ = sink.notify_keyboard_keycode(keycode as i32, ButtonState::Pressed).await;
                                 }
                             }
                             Message::KeyUp { keycode } => {
                                 pressed_keys.remove(&keycode);
                                 if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
                                     let keysym = (keycode & 0x7FFF_FFFF) as i32;
-                                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
+                                    let _ = sink.notify_keyboard_keysym(keysym, ButtonState::Released).await;
                                 } else {
-                                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
+                                    let _ = sink.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
                                 }
                             }
                             _ => {}
@@ -317,14 +328,13 @@ pub async fn run_session(
         }
 
         // Safety cleanup: release any keys still marked as pressed
-        if let Some(ref p_lock) = portal_clone {
-            let p = p_lock.lock().await;
+        if let Some(ref sink) = sink_clone {
             for keycode in pressed_keys {
                 if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
                     let keysym = (keycode & 0x7FFF_FFFF) as i32;
-                    let _ = p.notify_keyboard_keysym(keysym, ButtonState::Released).await;
+                    let _ = sink.notify_keyboard_keysym(keysym, ButtonState::Released).await;
                 } else {
-                    let _ = p.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
+                    let _ = sink.notify_keyboard_keycode(keycode as i32, ButtonState::Released).await;
                 }
             }
         }
@@ -379,7 +389,6 @@ pub async fn run_session(
                         let is_keyframe_req = keyframe_requested.swap(false, Ordering::Relaxed);
                         if is_keyframe_req {
                             encoder.force_keyframe();
-                            rate_controller.on_loss_event();
                         }
 
                         if !is_keyframe_req && !rate_controller.should_encode_frame() {
@@ -448,4 +457,15 @@ pub async fn run_session(
     let _ = reader_handle.await;
 
     Ok(())
+}
+
+/// Backwards-compatible wrapper for running a session with RemoteDesktopPortal.
+pub async fn run_session_with_portal(
+    stream: Box<dyn TransportStream>,
+    frame_rx: mpsc::Receiver<CapturedFrame>,
+    portal: Option<Arc<tokio::sync::Mutex<RemoteDesktopPortal>>>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    let input_sink = portal.map(InputSink::Portal);
+    run_session(stream, frame_rx, input_sink, running).await
 }
