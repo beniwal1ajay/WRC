@@ -127,6 +127,21 @@ fn pipewire_capture_loop(
     let sequence_clone = sequence.clone();
     let mainloop_weak = mainloop.downgrade();
 
+    // Recurring 100ms timer to ensure mainloop quits cleanly even if desktop is idle/static
+    let timer_running = running.clone();
+    let timer_ml_weak = mainloop.downgrade();
+    let _shutdown_timer = mainloop.loop_().add_timer(move |_| {
+        if !timer_running.load(Ordering::Relaxed) {
+            if let Some(ml) = timer_ml_weak.upgrade() {
+                ml.quit();
+            }
+        }
+    });
+    let _ = _shutdown_timer.update_timer(
+        Some(std::time::Duration::from_millis(100)),
+        Some(std::time::Duration::from_millis(100)),
+    );
+
     let _listener = stream
         .add_local_listener_with_user_data(())
         .param_changed(move |_stream, _user_data, param_id, param| {

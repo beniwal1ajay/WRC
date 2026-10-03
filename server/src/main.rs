@@ -580,8 +580,8 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                             }
 
                             session_running.store(false, Ordering::Relaxed);
-                            let _ = capture_handle.join();
                             let _ = mutter.stop().await;
+                            let _ = capture_handle.join();
                             info!("Mutter session released. Awaiting next connection...");
                         }
                         Err(e) => {
