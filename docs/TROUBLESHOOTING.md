@@ -1,202 +1,124 @@
-# WARD — Troubleshooting
+# WARD — Troubleshooting Guide
 
 ---
 
-## Diagnostic Commands
+## 1. Quick Diagnostic Commands
 
 ### Check Wayland Session
-
 ```bash
-echo $XDG_SESSION_TYPE
-# Expected: wayland
-
-echo $XDG_CURRENT_DESKTOP
-# Expected: ubuntu:GNOME
-
-echo $WAYLAND_DISPLAY
-# Expected: wayland-0
+echo "Session Type: $XDG_SESSION_TYPE"       # Expected: wayland
+echo "Desktop:      $XDG_CURRENT_DESKTOP"   # Expected: ubuntu:GNOME
+echo "Display:      $WAYLAND_DISPLAY"       # Expected: wayland-0
 ```
 
-### Check GNOME Version
-
+### Check GNOME & Mutter Version
 ```bash
 gnome-shell --version
-# Expected: GNOME Shell 46.x
+# Expected: GNOME Shell 46.x or 50.x
 ```
 
-### Check PipeWire
-
+### Check PipeWire Services
 ```bash
 systemctl --user status pipewire
-# Expected: active (running)
-
 systemctl --user status pipewire-pulse
-# Expected: active (running)
-
 systemctl --user status wireplumber
-# Expected: active (running)
-
-pipewire --version
-# Expected: Compiled with libpipewire 1.x.x
+# All three should be: active (running)
 ```
 
-### Check XDG Desktop Portal
-
+### Check WARD Host Daemon
 ```bash
-systemctl --user status xdg-desktop-portal
-# Expected: active (running)
+# Check service status
+systemctl --user status ward-host.service
 
-systemctl --user status xdg-desktop-portal-gnome
-# Expected: active (running)
+# View live streaming logs
+journalctl --user -u ward-host.service -f
+
+# Inspect host configuration and endpoints
+ward-server status
 ```
 
-### Check Portal Interfaces
-
+### Check Network Port Accessibility
 ```bash
-# ScreenCast portal available?
-busctl --user introspect org.freedesktop.portal.Desktop \
-    /org/freedesktop/portal/desktop \
-    org.freedesktop.portal.ScreenCast
-
-# RemoteDesktop portal available?
-busctl --user introspect org.freedesktop.portal.Desktop \
-    /org/freedesktop/portal/desktop \
-    org.freedesktop.portal.RemoteDesktop
-```
-
-### Check GNOME Remote Desktop
-
-```bash
-systemctl --user status gnome-remote-desktop
-# Note: WARD does not require this service to be running
-
-dpkg -l gnome-remote-desktop
-```
-
-### Check VA-API (Hardware Video Encoding)
-
-```bash
-vainfo
-# Look for: H264 encode
-
-# If vainfo is not installed:
-sudo apt install vainfo
-```
-
-### Check Network
-
-```bash
-ip addr show
-# Look for your LAN IP
-
-# Test if WARD port is accessible:
+# Verify port 9740 is bound and listening
 ss -tlnp | grep 9740
-```
-
-### Check WARD Service
-
-```bash
-systemctl --user status ward
-journalctl --user -u ward -f
+# Expected: LISTEN 0 128 0.0.0.0:9740
 ```
 
 ---
 
-## Common Issues
+## 2. Common Issues & Solutions
 
-### "Portal response timed out"
+### Issue: "Authentication failed: invalid host PIN (attempt X/5)"
+- **Cause:** The PIN entered on the Android device does not match the host's configured permanent PIN.
+- **Solution:** Verify or reset your permanent PIN on the Ubuntu host:
+  ```bash
+  ward-server set-pin 123456
+  ```
+  Note: After 5 consecutive failed attempts, the host enforces a 60-second administrative lockout to prevent brute-force attacks. Wait 60 seconds before retrying.
 
-**Cause:** The screen sharing permission dialog wasn't answered within 120 seconds.
+### Issue: "Session rejected: Host temporarily disabled"
+- **Cause:** WARD was administratively disabled via `ward-server disable`.
+- **Solution:** Re-enable remote access on the host:
+  ```bash
+  ward-server enable
+  ```
 
-**Fix:** When WARD starts, look for the GNOME permission dialog asking to share your screen. Click "Share" (or select the monitor and click "Share").
+### Issue: Screen Sharing Dialog Appeared in Older Versions
+- **Cause:** Older versions invoked `xdg-desktop-portal` directly, prompting the user with *"Share your screen?"*.
+- **Solution:** WARD's unattended host architecture connects directly to GNOME Mutter's native ScreenCast API (`org.gnome.Mutter.ScreenCast`). Ensure `ward-host.service` is running rather than old scripts:
+  ```bash
+  systemctl --user restart ward-host.service
+  ```
 
-### "No capture streams returned"
+### Issue: Mouse Cursor Not Visible on Android
+- **Cause:** ScreenCast stream configured with `Metadata` or `Hidden` cursor mode rather than `Embedded`.
+- **Solution:** WARD v1.0 sets `MetaScreenCastCursorMode = 1` (`Embedded`), causing the compositor to burn the cursor directly into the video stream framebuffers. If running an older build, update to the `vpn-stable` release.
 
-**Cause:** The portal didn't provide any PipeWire streams.
+### Issue: Android Client Can't Connect (Timeout or Connection Refused)
+1. **Firewall:** If `ufw` is active on Ubuntu, allow inbound TCP on port 9740:
+   ```bash
+   sudo ufw allow 9740/tcp
+   sudo ufw reload
+   ```
+2. **Network Route:** Ensure both devices are on the same Wi-Fi network, or both are connected to the same Tailscale / WireGuard VPN mesh.
+3. **Verify IP:** Run `ward-server status` to verify the IP address of your host.
 
-**Fix:**
-1. Make sure `xdg-desktop-portal-gnome` is running.
-2. Restart the portal: `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-gnome`
-3. Try again.
+### Issue: Video Lag or Dropped Frames
+1. **Network Congestion:** WARD includes an adaptive rate controller that dynamically scales encoding quality based on network throughput.
+2. **Hardware Acceleration:** Ensure your CPU/GPU supports hardware-accelerated video decoding on Android and fast encoding on Ubuntu.
+3. **TCP NoDelay:** WARD enables `TCP_NODELAY` on both client and host sockets to minimize latency.
 
-### "Failed to connect to PipeWire"
-
-**Cause:** PipeWire service not running or portal fd invalid.
-
-**Fix:**
-1. Check PipeWire: `systemctl --user status pipewire`
-2. Restart if needed: `systemctl --user restart pipewire wireplumber`
-3. Try again.
-
-### "No data pointer (likely DMA-BUF)"
-
-**Cause:** PipeWire is sending DMA-BUF (GPU memory) frames instead of SHM (shared memory).
-
-**Context:** This is common and actually preferred for performance. WARD will add DMA-BUF support.
-
-**Workaround:** Set `PIPEWIRE_DEBUG=3` environment variable for more info.
-
-### "XDG_SESSION_TYPE is not wayland"
-
-**Cause:** You're running under X11 or another session type.
-
-**Fix:**
-1. Log out and select "Ubuntu on Wayland" at the login screen.
-2. Do NOT switch to X11 as a fix for WARD. WARD is designed for Wayland.
-
-### "D-Bus connection failed"
-
-**Cause:** The D-Bus session bus is not available.
-
-**Fix:**
-1. Make sure `DBUS_SESSION_BUS_ADDRESS` is set: `echo $DBUS_SESSION_BUS_ADDRESS`
-2. If running via SSH, you may need to set this manually or use `dbus-run-session`.
-
-### Android Client Can't Connect
-
-1. Ensure both devices are on the same LAN/Wi-Fi.
-2. Check the server IP: `ip addr show wlp1s0` (or your interface).
-3. Check WARD is listening: `ss -tlnp | grep 9740`.
-4. Check firewall: `sudo ufw status`. If active, allow port 9740: `sudo ufw allow 9740/tcp`.
-5. Try pinging the server from another device on the LAN.
+### Issue: `XDG_SESSION_TYPE` is not `wayland`
+- **Cause:** You are logged into an X11 / Xorg desktop session.
+- **Solution:** Log out of Ubuntu, click the gear icon on the login screen, select **"Ubuntu on Wayland"**, and log back in. WARD is designed specifically for Wayland and does not use X11.
 
 ---
 
-## Log Levels
+## 3. Log Levels & Verbose Debugging
 
-Set the log level via the `RUST_LOG` environment variable:
+Set the log level via the `RUST_LOG` environment variable when running diagnostics:
 
 ```bash
-# Normal operation
-RUST_LOG=info ward-server
-
 # Debugging
-RUST_LOG=debug ward-server
+RUST_LOG=debug ward-server host
 
-# Verbose debugging (includes PipeWire frame details)
-RUST_LOG=trace ward-server
-
-# Specific module debugging
-RUST_LOG=ward_server::portal=debug,ward_server::capture=trace ward-server
+# Trace PipeWire frame delivery and D-Bus calls
+RUST_LOG=ward_server::portal=trace,ward_server::capture=trace ward-server host
 ```
 
 ---
 
-## Restarting Services
+## 4. Service Recovery & Clean Restart
 
-If things are broken, try restarting in this order:
+If an unexpected state occurs, restart the desktop media stack in sequence:
 
 ```bash
-# 1. PipeWire
+# 1. Restart PipeWire & WirePlumber
 systemctl --user restart pipewire wireplumber
 
-# 2. XDG Desktop Portal
-systemctl --user restart xdg-desktop-portal xdg-desktop-portal-gnome
+# 2. Restart WARD Host Daemon
+systemctl --user restart ward-host.service
 
-# 3. WARD
-systemctl --user restart ward
-
-# 4. If all else fails, log out and back in
+# 3. Verify status
+systemctl --user status ward-host.service
 ```
-
-Do **NOT** restart GDM or switch to X11 as a troubleshooting step.

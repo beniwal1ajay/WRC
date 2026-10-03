@@ -44,7 +44,9 @@ fi
 echo ""
 echo "==> Step 3: Installing systemd user service..."
 mkdir -p "${SYSTEMD_USER_DIR}"
+cp "${SYSTEMD_DIR}/ward-host.service" "${SYSTEMD_USER_DIR}/ward-host.service"
 cp "${SYSTEMD_DIR}/ward.service" "${SYSTEMD_USER_DIR}/ward.service"
+echo "✅ Installed: ${SYSTEMD_USER_DIR}/ward-host.service"
 echo "✅ Installed: ${SYSTEMD_USER_DIR}/ward.service"
 
 # Reload systemd user daemon
@@ -54,19 +56,25 @@ systemctl --user daemon-reload
 
 # 5. Enable and start service
 echo ""
-echo "==> Step 5: Enabling WARD service to start on desktop login..."
-systemctl --user enable ward.service
+echo "==> Step 5: Enabling WARD Host service to start on desktop login..."
+systemctl --user enable ward-host.service
+systemctl --user start ward-host.service
 
 echo ""
 echo "=================================================="
-echo "🎉 WARD Server successfully installed!"
+echo "🎉 WARD Host Server successfully installed!"
 echo "=================================================="
 echo ""
+echo "One-Time Host Setup:"
+echo "  Run this to configure your permanent PIN and PC identity:"
+echo "  • ward-server setup"
+echo ""
 echo "Useful Commands:"
-echo "  • Start service now:     systemctl --user start ward.service"
-echo "  • Check service status:  systemctl --user status ward.service"
-echo "  • View live server logs: journalctl --user -u ward.service -f"
-echo "  • Inspect identity:      ward-server status"
-echo "  • Stop service:          systemctl --user stop ward.service"
+echo "  • Set/Change PIN:        ward-server set-pin [6-digit PIN]"
+echo "  • Check service status:  systemctl --user status ward-host.service"
+echo "  • View live server logs: journalctl --user -u ward-host.service -f"
+echo "  • Inspect host status:   ward-server status"
+echo "  • Unpair all devices:    ward-server unpair --all"
+echo "  • Stop host service:     systemctl --user stop ward-host.service"
 echo "  • Uninstall:             bash scripts/uninstall-server.sh"
 echo ""

@@ -1,20 +1,23 @@
 # WARD — Production Deployment Guide
 
-This guide covers building, installing, running, and managing WARD (Wayland Android Remote Desktop) across your Ubuntu host and Android devices for local LAN and remote WAN access.
+This guide covers building, installing, running, and managing WARD (Wayland Android Remote Desktop) across your Ubuntu host and Android devices for local LAN and remote VPN access.
 
 ---
 
 ## 1. Quick Start (Automated Deployment)
 
-### Host Server (Ubuntu 24.04 Wayland)
+### Host Server (Ubuntu Wayland)
 To compile the release binary, install it to `~/.local/bin`, and configure the systemd user service:
 
 ```bash
-# 1. Install dependencies (if not already installed)
+# 1. Install dependencies
 bash scripts/install-deps.sh
 
-# 2. Build and install server & systemd service
+# 2. Build release binary, install ward-host.service, and start it
 bash scripts/install-server.sh
+
+# 3. Perform one-time setup and set your permanent host PIN
+ward-server setup
 ```
 
 ### Android Client
@@ -29,9 +32,10 @@ bash scripts/deploy-android.sh
 ## 2. Server Deployment Details
 
 ### System Requirements
-- **OS:** Ubuntu 24.04 LTS (or modern Linux distribution with GNOME Wayland)
+- **OS:** Ubuntu 24.04 LTS or 26.04 LTS with GNOME Wayland
 - **Session:** Active Wayland user session (`echo $XDG_SESSION_TYPE` should output `wayland`)
-- **Services:** `pipewire`, `wireplumber`, and `xdg-desktop-portal-gnome`
+- **Services:** `pipewire`, `wireplumber`, and `mutter` (GNOME Wayland Compositor)
+- **Privileges:** Standard user account (no root required)
 
 ### Binary Installation
 Compiling the optimized release binary manually:
@@ -48,20 +52,20 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### Systemd User Service Configuration
-Because WARD captures your live Wayland desktop and injects input via D-Bus and PipeWire, it runs as a **systemd user service** under your user account (not root).
+Because WARD captures your live Wayland desktop and injects input via GNOME Mutter's D-Bus interfaces and PipeWire, it runs as a **systemd user service** under your user account (`ward-host.service`).
 
-The unit file is installed at `~/.config/systemd/user/ward.service`:
+The unit file is installed at `~/.config/systemd/user/ward-host.service`:
 
 ```ini
 [Unit]
-Description=WARD - Wayland Android Remote Desktop Server
+Description=WARD Host - Unattended Wayland Remote Desktop Server
 Documentation=https://github.com/beniwal1ajay/WRC
 After=graphical-session.target pipewire.service
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/ward-server stream
+ExecStart=%h/.local/bin/ward-server host
 Restart=on-failure
 RestartSec=3s
 Environment=RUST_BACKTRACE=1
@@ -75,13 +79,13 @@ WantedBy=graphical-session.target
 
 | Action | Command |
 |---|---|
-| **Start Service** | `systemctl --user start ward.service` |
-| **Stop Service** | `systemctl --user stop ward.service` |
-| **Check Status** | `systemctl --user status ward.service` |
-| **Restart Service** | `systemctl --user restart ward.service` |
-| **Enable on Login** | `systemctl --user enable ward.service` |
-| **Disable Autostart**| `systemctl --user disable ward.service` |
-| **Live Logs** | `journalctl --user -u ward.service -f` |
+| **Start Service** | `systemctl --user start ward-host.service` |
+| **Stop Service** | `systemctl --user stop ward-host.service` |
+| **Check Status** | `systemctl --user status ward-host.service` |
+| **Restart Service** | `systemctl --user restart ward-host.service` |
+| **Enable on Login** | `systemctl --user enable ward-host.service` |
+| **Disable Autostart**| `systemctl --user disable ward-host.service` |
+| **Live Logs** | `journalctl --user -u ward-host.service -f` |
 
 ---
 
@@ -96,7 +100,7 @@ sudo ufw reload
 ```
 
 ### Remote Access via Mesh VPN (Recommended)
-For secure remote access across cellular networks (LTE/5G) without opening public router ports or port forwarding:
+For secure remote access across cellular networks (LTE/5G) without opening public router ports or configuring port forwarding:
 
 1. **Install Tailscale on Ubuntu:**
    ```bash
@@ -107,9 +111,9 @@ For secure remote access across cellular networks (LTE/5G) without opening publi
    - Install Tailscale from Google Play Store or F-Droid.
    - Sign in with the same account.
 3. **Connect directly:**
-   - Note your Ubuntu host's Tailscale IP (`100.x.y.z`).
+   - Note your Ubuntu host's Tailscale IP (`100.x.y.z`) via `tailscale ip -4`.
    - In the WARD Android app, enter the `100.x.y.z` address.
-   - Traffic connects directly with zero relay overhead over encrypted WireGuard tunnels.
+   - Traffic connects directly peer-to-peer with zero relay overhead over encrypted WireGuard tunnels.
 
 ---
 
@@ -141,35 +145,47 @@ The resulting APK is located at:
 
 ---
 
-## 5. First-Time Pairing & Client Management
+## 5. Host Setup & Authentication
 
-1. **Start WARD Server:**
-   ```bash
-   systemctl --user start ward.service
-   # or run directly in a terminal:
-   ward-server stream
-   ```
-2. **First Connection:**
-   - Open WARD on Android and connect to your Ubuntu IP address (e.g. `192.168.1.100` or `100.x.y.z`).
-   - The host will generate a secure 6-digit numeric pairing PIN.
-   - A native desktop notification will pop up on your Ubuntu desktop displaying the PIN:
-     ```
-     WARD Remote Desktop: Pairing PIN for Pixel 8 Pro
-     Enter PIN on Android: 849201
-     ```
-   - Enter the PIN on your phone.
-3. **Automatic Fast Token Reconnection:**
-   - Once paired, WARD stores a cryptographically secure 256-bit token on both host (`~/.config/ward/authorized_clients.json`) and Android (`EncryptedSharedPreferences`).
-   - All subsequent connections bypass PIN verification and resume instantly.
+### 1. One-Time Setup
+Run the setup wizard on Ubuntu:
+```bash
+ward-server setup
+```
+This command:
+- Tests the native GNOME Mutter ScreenCast and RemoteDesktop D-Bus interfaces.
+- Generates the host's cryptographic Ed25519 identity keypair (`~/.config/ward/host_identity.json`).
+- Hashes and stores your permanent PIN using PBKDF2-HMAC-SHA256 with 600,000 iterations (`~/.config/ward/host_config.json`).
+- Ensures the systemd user service `ward-host.service` is enabled and active.
 
-### CLI Management
+### 2. First Connection from Android
+1. Open WARD on Android.
+2. Under "My Computers", select your Ubuntu PC (or enter your LAN or Tailscale IP).
+3. Tap **Connect**.
+4. Enter your permanent 6-digit PIN when prompted.
+5. Upon successful PIN verification, the server issues a cryptographically secure 256-bit token saved on both host (`~/.config/ward/authorized_clients.json`) and Android client (`EncryptedSharedPreferences`).
 
-Inspect server identity, public keys, and all authorized client devices:
+### 3. Subsequent Reconnections
+All future connections challenge the client with token authentication. The Android client presents its token and connects **instantly with zero interaction required on either Ubuntu or Android**.
+
+### 4. Changing PIN & Invalidation
+To change your host PIN:
+```bash
+ward-server set-pin 654321
+```
+Changing the PIN automatically:
+- Updates the PBKDF2 verifier.
+- Revokes all existing client tokens (requires all clients to re-authenticate with the new PIN).
+- Automatically restarts `ward-host.service` to terminate any currently active sessions.
+
+### 5. CLI Management Commands
+
+Inspect host status, identity, active endpoints, and authorized devices:
 ```bash
 ward-server status
 ```
 
-List all paired devices:
+List all authorized client devices:
 ```bash
 ward-server devices
 ```
@@ -177,6 +193,21 @@ ward-server devices
 Revoke access for a specific device:
 ```bash
 ward-server unpair <DEVICE_ID>
+```
+
+Revoke access for all devices:
+```bash
+ward-server unpair --all
+```
+
+Temporarily disable all remote connections (emergency kill-switch):
+```bash
+ward-server disable
+```
+
+Re-enable remote connections:
+```bash
+ward-server enable
 ```
 
 ---
@@ -189,7 +220,7 @@ To cleanly remove WARD from the host:
 bash scripts/uninstall-server.sh
 ```
 
-To also delete all persisted keys and paired device authorizations:
+To also delete all persisted keys and host configuration:
 ```bash
 rm -rf ~/.config/ward
 ```

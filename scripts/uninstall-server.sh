@@ -12,15 +12,22 @@ echo "   WARD Server — Uninstaller                     "
 echo "=================================================="
 echo ""
 
-echo "==> Stopping and disabling WARD user service..."
+echo "==> Stopping and disabling WARD user services..."
+systemctl --user stop ward-host.service 2>/dev/null || true
+systemctl --user disable ward-host.service 2>/dev/null || true
 systemctl --user stop ward.service 2>/dev/null || true
 systemctl --user disable ward.service 2>/dev/null || true
+
+if [ -f "${SYSTEMD_USER_DIR}/ward-host.service" ]; then
+    echo "==> Removing ${SYSTEMD_USER_DIR}/ward-host.service..."
+    rm -f "${SYSTEMD_USER_DIR}/ward-host.service"
+fi
 
 if [ -f "${SYSTEMD_USER_DIR}/ward.service" ]; then
     echo "==> Removing ${SYSTEMD_USER_DIR}/ward.service..."
     rm -f "${SYSTEMD_USER_DIR}/ward.service"
-    systemctl --user daemon-reload
 fi
+systemctl --user daemon-reload
 
 if [ -f "${BIN_INSTALL_DIR}/ward-server" ]; then
     echo "==> Removing binary ${BIN_INSTALL_DIR}/ward-server..."
