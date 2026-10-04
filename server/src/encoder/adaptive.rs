@@ -211,9 +211,10 @@ mod tests {
         let initial_bitrate = controller.current_bitrate_bps;
         let initial_fps = controller.current_fps;
 
-        // Simulate high RTT (250ms)
+        // Simulate high RTT with smoothed RTT above backoff threshold (250ms)
+        controller.smoothed_rtt_ms = 260.0;
         controller.last_adaptation = Instant::now() - Duration::from_secs(1);
-        controller.on_network_feedback(250, 15);
+        controller.on_network_feedback(280, 15);
 
         assert!(controller.current_bitrate_bps < initial_bitrate);
         assert!(controller.current_fps <= initial_fps);

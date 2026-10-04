@@ -7,7 +7,10 @@ pub mod adaptive;
 
 use anyhow::{Context, Result};
 use openh264::OpenH264API;
-use openh264::encoder::{Encoder, EncoderConfig, FrameType};
+use openh264::encoder::{
+    BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, RateControlMode, UsageType,
+    VuiConfig,
+};
 use openh264::formats::YUVSource;
 
 /// Zero-copy borrow of planar YUV420 data implementing OpenH264's YUVSource trait.
@@ -76,12 +79,24 @@ impl Default for EncoderSettings {
 /// Real-time H.264 video encoder wrapper.
 pub struct VideoEncoder {
     encoder: Encoder,
+    settings: EncoderSettings,
     width: usize,
     height: usize,
     yuv_buffer: Vec<u8>,
 }
 
 impl VideoEncoder {
+    fn build_config(settings: &EncoderSettings) -> EncoderConfig {
+        EncoderConfig::new()
+            .bitrate(BitRate::from_bps(settings.bitrate_bps))
+            .max_frame_rate(FrameRate::from_hz(settings.max_fps))
+            .rate_control_mode(RateControlMode::Bitrate)
+            .usage_type(UsageType::ScreenContentRealTime)
+            .complexity(Complexity::Low)
+            .skip_frames(true)
+            .vui(VuiConfig::srgb())
+    }
+
     pub fn new(settings: EncoderSettings) -> Result<Self> {
         let mut width = settings.width;
         let mut height = settings.height;
@@ -89,7 +104,7 @@ impl VideoEncoder {
         if width % 2 != 0 { width -= 1; }
         if height % 2 != 0 { height -= 1; }
 
-        let config = EncoderConfig::new();
+        let config = Self::build_config(&settings);
         let api = OpenH264API::from_source();
         let encoder = Encoder::with_api_config(api, config)
             .context("Failed to initialize OpenH264 encoder")?;
@@ -98,16 +113,32 @@ impl VideoEncoder {
         let yuv_buffer = vec![0u8; yuv_size];
 
         info!(
-            "Video encoder initialized: {}x{}, target bitrate {} kbps",
-            width, height, settings.bitrate_bps / 1000
+            "Video encoder initialized: {}x{}, target bitrate {} kbps, max fps {:.1}",
+            width, height, settings.bitrate_bps / 1000, settings.max_fps
         );
 
         Ok(Self {
             encoder,
+            settings,
             width,
             height,
             yuv_buffer,
         })
+    }
+
+    /// Dynamically update target bitrate according to real-time network conditions.
+    pub fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if (self.settings.bitrate_bps as i32 - bitrate_bps as i32).abs() < 150_000 {
+            return;
+        }
+        self.settings.bitrate_bps = bitrate_bps;
+        let config = Self::build_config(&self.settings);
+        let api = OpenH264API::from_source();
+        if let Ok(new_enc) = Encoder::with_api_config(api, config) {
+            self.encoder = new_enc;
+            self.encoder.force_intra_frame();
+            info!("OpenH264 bitrate dynamically adjusted to {} kbps", bitrate_bps / 1000);
+        }
     }
 
     /// Force the next encoded frame to be an IDR keyframe (with SPS/PPS headers).

@@ -703,11 +703,15 @@ pub async fn write_message<W: tokio::io::AsyncWrite + Unpin>(
     let header = Header::new(message.msg_type(), payload.len() as u32, sequence);
     let header_bytes = header.serialize();
 
-    writer.write_all(&header_bytes).await
-        .context("Failed to write message header")?;
-    if !payload.is_empty() {
-        writer.write_all(&payload).await
-            .context("Failed to write message payload")?;
+    if payload.is_empty() {
+        writer.write_all(&header_bytes).await
+            .context("Failed to write message header")?;
+    } else {
+        let mut combined = Vec::with_capacity(Header::SIZE + payload.len());
+        combined.extend_from_slice(&header_bytes);
+        combined.extend_from_slice(&payload);
+        writer.write_all(&combined).await
+            .context("Failed to write message")?;
     }
     writer.flush().await
         .context("Failed to flush message")?;

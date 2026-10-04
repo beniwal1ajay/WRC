@@ -35,6 +35,7 @@ class PairedDeviceStore(context: Context) {
         private const val KEY_IS_PAIRED = "is_paired"
         private const val KEY_AUTH_TOKEN = "auth_token"
         private const val KEY_CLIENT_DEVICE_ID = "client_device_id"
+        private const val KEY_CERT_SHA256 = "cert_sha256"
 
         const val DEFAULT_DEVICE_NAME = "AJAY-UBUNTU"
         const val DEFAULT_HOST = "10.31.1.234"
@@ -149,5 +150,15 @@ class PairedDeviceStore(context: Context) {
         )
         savePairedDevice(updated)
         return updated
+    }
+
+    fun getPinnedCertSha256(): String? = prefs.getString(KEY_CERT_SHA256, null)
+
+    fun setPinnedCertSha256(fingerprint: String) {
+        prefs.edit().putString(KEY_CERT_SHA256, fingerprint).apply()
+    }
+
+    fun clearPinnedCertSha256() {
+        prefs.edit().remove(KEY_CERT_SHA256).apply()
     }
 }

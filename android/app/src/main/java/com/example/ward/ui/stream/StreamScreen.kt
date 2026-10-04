@@ -216,10 +216,10 @@ fun WardRemoteApp() {
         }
     }
 
-    // Auto-contract bar after 4 seconds of inactivity
+    // Auto-contract bar after 8 seconds of inactivity
     LaunchedEffect(isBarCollapsed, lastBarInteraction) {
         if (!isBarCollapsed) {
-            delay(4000)
+            delay(8000)
             isBarCollapsed = true
         }
     }
@@ -300,6 +300,9 @@ fun WardRemoteApp() {
                             var pointerCount = 0
                             var isDragging = false
                             var threeFingerSwipeStartY = 0f
+                            var accumulatedDx = 0f
+                            var accumulatedDy = 0f
+                            var lastMoveDispatchTime = 0L
 
                             setOnTouchListener { v, event ->
                                 pointerCount = event.pointerCount
@@ -310,6 +313,9 @@ fun WardRemoteApp() {
                                         downY = event.y
                                         lastX1 = event.x
                                         lastY1 = event.y
+                                        accumulatedDx = 0f
+                                        accumulatedDy = 0f
+                                        lastMoveDispatchTime = System.currentTimeMillis()
                                         downTime = System.currentTimeMillis()
                                         isDragging = false
                                         v.performClick()
@@ -334,6 +340,12 @@ fun WardRemoteApp() {
                                         if (pointerCount == 1) {
                                             val dx = event.x - lastX1
                                             val dy = event.y - lastY1
+                                            lastX1 = event.x
+                                            lastY1 = event.y
+
+                                            accumulatedDx += dx
+                                            accumulatedDy += dy
+
                                             val totalDist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
 
                                             // Enter drag mode if held down for > 350ms
@@ -343,9 +355,15 @@ fun WardRemoteApp() {
                                                 wardClient?.sendInput(WardMessage.MouseButton(1, 1))
                                             }
 
-                                            wardClient?.sendInput(WardMessage.MouseMove(dx, dy))
-                                            lastX1 = event.x
-                                            lastY1 = event.y
+                                            // Pace pointer updates to ~100Hz max to avoid D-Bus saturation
+                                            if (now - lastMoveDispatchTime >= 10L) {
+                                                if (accumulatedDx != 0f || accumulatedDy != 0f) {
+                                                    wardClient?.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
+                                                    accumulatedDx = 0f
+                                                    accumulatedDy = 0f
+                                                }
+                                                lastMoveDispatchTime = now
+                                            }
                                         } else if (pointerCount == 2) {
                                             // 2-finger scroll
                                             val currentY1 = event.getY(0)
@@ -398,6 +416,12 @@ fun WardRemoteApp() {
                                     }
 
                                     MotionEvent.ACTION_UP -> {
+                                        if (accumulatedDx != 0f || accumulatedDy != 0f) {
+                                            wardClient?.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
+                                            accumulatedDx = 0f
+                                            accumulatedDy = 0f
+                                        }
+
                                         val duration = System.currentTimeMillis() - downTime
                                         val dist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
 
@@ -657,131 +681,155 @@ fun WardRemoteApp() {
                     // PORTRAIT MODE: Leave horizontal top bar as it is
                     // -------------------------------------------------------------
 
-                    // Top Floating Bar (Expanded)
+                    // Top Floating Bar (Expanded in Portrait)
                     AnimatedVisibility(
                         visible = !isBarCollapsed,
                         enter = fadeIn(),
                         exit = fadeOut(),
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 28.dp, start = 12.dp, end = 12.dp)
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 28.dp, start = 8.dp, end = 8.dp)
+                            .fillMaxWidth()
                     ) {
                         Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xEE1E232E)),
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xF0141824)),
                             shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, Color(0x33FFFFFF)),
                             elevation = CardDefaults.cardElevation(8.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Surface(
-                                    color = if (sessionStats?.connectionType == TransportType.VPN) Color(0xFF0284C7) else Color(0xFF059669),
-                                    shape = RoundedCornerShape(4.dp)
+                                // Row 1: Connection info, Diag, Keyboard, and Collapse button
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
+                                    Surface(
+                                        color = if (sessionStats?.connectionType == TransportType.VPN) Color(0xFF0284C7) else Color(0xFF059669),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "v1.1 • " + (sessionStats?.connectionType?.displayName ?: "LAN"),
+                                            color = Color.White,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        )
+                                    }
                                     Text(
-                                        text = sessionStats?.connectionType?.displayName ?: "LAN",
-                                        color = Color.White,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                        text = "$fps FPS",
+                                        color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
                                     )
-                                }
-                                Text(
-                                    text = "${streamWidth}x${streamHeight}",
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "$fps FPS",
-                                    color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                    if (sessionStats != null && sessionStats!!.latencyMs > 0) {
+                                        Text(
+                                            text = "${sessionStats!!.latencyMs}ms",
+                                            color = Color(0xFF38BDF8),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
 
-                                Button(
-                                    onClick = {
-                                        lastBarInteraction = System.currentTimeMillis()
-                                        showDiagnostics = !showDiagnostics
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (showDiagnostics) Color(0xFF0284C7) else Color(0xFF334155),
-                                        contentColor = Color.White
-                                    ),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("📊 Diag", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                }
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            showDiagnostics = !showDiagnostics
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (showDiagnostics) Color(0xFF0284C7) else Color(0xFF334155),
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("📊 Diag", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
 
-                                // Direct Phone Keyboard Trigger
-                                Button(
-                                    onClick = {
-                                        lastBarInteraction = System.currentTimeMillis()
-                                        showKeyboard()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7), contentColor = Color.White),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                }
+                                    // Direct Phone Keyboard Trigger
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            showKeyboard()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7), contentColor = Color.White),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("⌨ Type", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
 
-                                // Quick Shortcuts Bar Toggle
-                                Button(
-                                    onClick = {
-                                        lastBarInteraction = System.currentTimeMillis()
-                                        showShortcuts = !showShortcuts
-                                    },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
-                                        contentColor = Color.White
-                                    ),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("Shortcuts", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White)
+                                    // Manual collapse button in portrait
+                                    Button(
+                                        onClick = { isBarCollapsed = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B), contentColor = Color.White),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("▲", fontSize = 11.sp, color = Color.White)
+                                    }
                                 }
 
-                                Button(
-                                    onClick = {
-                                        lastBarInteraction = System.currentTimeMillis()
-                                        wardClient?.requestKeyframe()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569), contentColor = Color.White),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    shape = RoundedCornerShape(8.dp)
+                                // Row 2: Action Buttons (Shortcuts, Refresh, Disconnect) - Always visible in portrait!
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Text("Refresh", fontSize = 11.sp, color = Color.White)
-                                }
+                                    // Quick Shortcuts Bar Toggle
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            showShortcuts = !showShortcuts
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("⚡ Keys", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = Color.White)
+                                    }
 
-                                Button(
-                                    onClick = {
-                                        wardClient?.disconnect()
-                                        videoDecoder?.stop()
-                                        connectionState = ConnectionState.Disconnected
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                    modifier = Modifier.height(32.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("Exit", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                }
+                                    // Refresh Stream / Request Keyframe
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            wardClient?.requestKeyframe()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569), contentColor = Color.White),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("↻ Refresh", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
 
-                                // Manual collapse button in portrait
-                                Button(
-                                    onClick = { isBarCollapsed = true },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B), contentColor = Color.White),
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                    modifier = Modifier.height(28.dp),
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
-                                    Text("▲", fontSize = 10.sp, color = Color.White)
+                                    // Disconnect Session
+                                    Button(
+                                        onClick = {
+                                            wardClient?.disconnect()
+                                            videoDecoder?.stop()
+                                            connectionState = ConnectionState.Disconnected
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("✕ Disconnect", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
                                 }
                             }
                         }
@@ -861,7 +909,7 @@ fun WardRemoteApp() {
                         Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             // Row 1: Dedicated Scroll and Page Navigation
                             Row(
-                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 val navButton = @Composable { label: String, bgColor: Color, onClick: () -> Unit ->
@@ -897,7 +945,7 @@ fun WardRemoteApp() {
 
                             // Row 2: Clipboard & Arrow navigation
                             Row(
-                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 val actionButton = @Composable { label: String, onClick: () -> Unit ->
@@ -1163,7 +1211,14 @@ fun WardRemoteApp() {
                             Button(
                                 onClick = {
                                     val port = portText.toIntOrNull() ?: 9740
+                                    val transport = com.example.ward.transport.LanTlsTransport(
+                                        pinnedCertProvider = { deviceStore.getPinnedCertSha256() },
+                                        onCertDiscovered = { fp ->
+                                            deviceStore.setPinnedCertSha256(fp)
+                                        }
+                                    )
                                     val client = WardClient(
+                                        transport = transport,
                                         onStateChanged = { newState ->
                                             connectionState = newState
                                         },

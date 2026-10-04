@@ -24,10 +24,30 @@ use crate::portal::remote_desktop::RemoteDesktopPortal;
 /// Default TCP port for the WARD server.
 pub const DEFAULT_PORT: u16 = 9740;
 
-/// Create a TLS 1.3 server configuration with a self-signed X.509 certificate.
-pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
-    // Ensure ring crypto provider is installed
-    let _ = rustls::crypto::ring::default_provider().install_default();
+fn get_or_create_tls_cert() -> Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
+    let cert_dir = if let Some(cfg) = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from) {
+        cfg.join("ward")
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".config").join("ward")
+    } else {
+        std::path::PathBuf::from(".config").join("ward")
+    };
+    let _ = std::fs::create_dir_all(&cert_dir);
+
+    let cert_path = cert_dir.join("tls_cert.der");
+    let key_path = cert_dir.join("tls_key.der");
+
+    if cert_path.exists() && key_path.exists() {
+        if let (Ok(cert_bytes), Ok(key_bytes)) = (std::fs::read(&cert_path), std::fs::read(&key_path)) {
+            let digest = ring::digest::digest(&ring::digest::SHA256, &cert_bytes);
+            let fingerprint: String = digest.as_ref().iter().map(|b| format!("{:02x}", b)).collect();
+            info!("  [WARD TLS] Loaded persistent certificate (SHA-256: {})", fingerprint);
+            return Ok((
+                CertificateDer::from(cert_bytes),
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes)),
+            ));
+        }
+    }
 
     let mut subject_alt_names = vec![
         "localhost".to_string(),
@@ -45,17 +65,49 @@ pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
     let certified_key = generate_simple_self_signed(subject_alt_names)
         .context("Failed to generate self-signed TLS certificate")?;
 
-    let cert_der = CertificateDer::from(certified_key.cert.der().to_vec());
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        certified_key.signing_key.serialize_der(),
-    ));
+    let cert_bytes = certified_key.cert.der().to_vec();
+    let key_bytes = certified_key.signing_key.serialize_der();
+
+    let _ = std::fs::write(&cert_path, &cert_bytes);
+    let _ = std::fs::write(&key_path, &key_bytes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&cert_path, std::fs::Permissions::from_mode(0o644));
+        let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    let digest = ring::digest::digest(&ring::digest::SHA256, &cert_bytes);
+    let fingerprint: String = digest.as_ref().iter().map(|b| format!("{:02x}", b)).collect();
+    info!("  [WARD TLS] Generated new persistent certificate (SHA-256: {})", fingerprint);
+
+    Ok((
+        CertificateDer::from(cert_bytes),
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes)),
+    ))
+}
+
+static TLS_CONFIG: std::sync::OnceLock<Arc<rustls::ServerConfig>> = std::sync::OnceLock::new();
+
+/// Create a TLS 1.3 server configuration with a self-signed X.509 certificate.
+pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
+    if let Some(cfg) = TLS_CONFIG.get() {
+        return Ok(cfg.clone());
+    }
+
+    // Ensure ring crypto provider is installed
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let (cert_der, key_der) = get_or_create_tls_cert()?;
 
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert_der], key_der)
         .context("Failed to build rustls ServerConfig")?;
 
-    Ok(Arc::new(server_config))
+    let arc = Arc::new(server_config);
+    let _ = TLS_CONFIG.set(arc.clone());
+    Ok(arc)
 }
 
 /// Run the WARD streaming server session for a single connected client using an InputSink.

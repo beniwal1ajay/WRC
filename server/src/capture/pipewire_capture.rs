@@ -142,7 +142,7 @@ fn pipewire_capture_loop(
         Some(std::time::Duration::from_millis(100)),
     );
 
-    let _listener = stream
+    let listener_builder = stream
         .add_local_listener_with_user_data(())
         .param_changed(move |_stream, _user_data, param_id, param| {
             if param.is_none() {
@@ -161,7 +161,10 @@ fn pipewire_capture_loop(
             // For now, we'll get the actual dimensions from the buffer chunk stride
             // and data length when the first frame arrives. This is more reliable
             // than parsing the SPA pod manually.
-        })
+        });
+
+    let mut spare_buffer: Option<Vec<u8>> = None;
+    let _listener = listener_builder
         .process(move |stream, _user_data| {
             if !running_clone.load(Ordering::Relaxed) {
                 if let Some(ml) = mainloop_weak.upgrade() {
@@ -225,9 +228,13 @@ fn pipewire_capture_loop(
 
                     let seq = sequence_clone.fetch_add(1, Ordering::Relaxed);
 
-                    // Copy frame data (only the valid portion)
+                    // Copy frame data into recycled buffer or new allocation
                     let copy_size = std::cmp::min(chunk_size, raw_data.len());
-                    let frame_data = raw_data[..copy_size].to_vec();
+                    let mut frame_data = spare_buffer.take().unwrap_or_else(Vec::new);
+                    if frame_data.len() != copy_size {
+                        frame_data.resize(copy_size, 0);
+                    }
+                    frame_data.copy_from_slice(&raw_data[..copy_size]);
 
                     let frame = CapturedFrame {
                         data: frame_data,
@@ -243,9 +250,10 @@ fn pipewire_capture_loop(
                         Ok(()) => {
                             stats_clone.frames_received.fetch_add(1, Ordering::Relaxed);
                         }
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        Err(std::sync::mpsc::TrySendError::Full(dropped)) => {
                             stats_clone.frames_dropped.fetch_add(1, Ordering::Relaxed);
                             trace!("Frame buffer full, dropping frame {}", seq);
+                            spare_buffer = Some(dropped.data);
                         }
                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                             warn!("Frame receiver disconnected");

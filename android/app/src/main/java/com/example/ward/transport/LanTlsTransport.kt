@@ -23,7 +23,10 @@ private const val TAG = "LanTlsTransport"
 /**
  * LAN Transport implementing TLS 1.3 over direct TCP socket with sequential FIFO input queue.
  */
-class LanTlsTransport : WardTransport {
+class LanTlsTransport(
+    private val pinnedCertProvider: (() -> String?)? = null,
+    private val onCertDiscovered: ((String) -> Unit)? = null
+) : WardTransport {
     override var transportType: TransportType = TransportType.LAN
         private set
 
@@ -46,14 +49,31 @@ class LanTlsTransport : WardTransport {
         transportType = classifyTransportType(host)
         Log.i(TAG, "[TLS DIAG] Starting $transportType connection to $host:$port...")
 
-        // Robust ExtendedTrustManager covering all X509 validation callbacks (standard, socket-based, engine-based)
+        // Robust ExtendedTrustManager with TOFU (Trust-On-First-Use) SHA-256 certificate pinning
         val trustAllCerts = arrayOf<TrustManager>(object : X509ExtendedTrustManager() {
             override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
             override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {
-                val cert = chain?.firstOrNull()
-                val sans = try { cert?.subjectAlternativeNames?.map { it[1].toString() } } catch (_: Exception) { null }
-                Log.i(TAG, "[DIAG] Certificate validation: chain_len=${chain?.size}, authType=$authType, subject=${cert?.subjectDN}, issuer=${cert?.issuerDN}, SANs=$sans, result=ACCEPT")
+                val cert = chain?.firstOrNull() ?: throw java.security.cert.CertificateException("Empty certificate chain")
+                val sans = try { cert.subjectAlternativeNames?.map { it[1].toString() } } catch (_: Exception) { null }
+                val md = java.security.MessageDigest.getInstance("SHA-256")
+                val digest = md.digest(cert.encoded)
+                val fingerprint = digest.joinToString("") { "%02x".format(it) }
+
+                val pinned = pinnedCertProvider?.invoke()
+                if (!pinned.isNullOrBlank()) {
+                    if (!fingerprint.equals(pinned.trim(), ignoreCase = true)) {
+                        Log.e(TAG, "[SECURITY ALERT] TLS Certificate fingerprint mismatch! Pinned: $pinned, Presented: $fingerprint")
+                        throw java.security.cert.CertificateException(
+                            "WARD Host Certificate mismatch! Pinned: $pinned, Presented: $fingerprint. Potential MITM attack."
+                        )
+                    }
+                    Log.i(TAG, "[SECURITY] Verified pinned host TLS certificate ($fingerprint)")
+                } else {
+                    Log.i(TAG, "[SECURITY] Trust-On-First-Use: Discovered host TLS certificate ($fingerprint)")
+                    onCertDiscovered?.invoke(fingerprint)
+                }
+                Log.i(TAG, "[DIAG] Certificate validation: chain_len=${chain.size}, authType=$authType, subject=${cert.subjectDN}, SANs=$sans, result=ACCEPT")
             }
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) {}
             override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) {

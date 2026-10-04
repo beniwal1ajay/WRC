@@ -278,29 +278,58 @@ pub async fn run_session(
     let running_input = running.clone();
     let input_dispatcher = tokio::spawn(async move {
         let mut pressed_keys: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut pending_msg: Option<Message> = None;
 
         while running_input.load(Ordering::Relaxed) {
-            match input_rx.recv().await {
-                Some(msg) => {
-                    if let Some(ref sink) = sink_clone {
-                        match msg {
-                            Message::MouseMove { x, y } => {
-                                let _ = sink.notify_pointer_motion(x as f64, y as f64).await;
+            let msg = if let Some(m) = pending_msg.take() {
+                m
+            } else {
+                match input_rx.recv().await {
+                    Some(m) => m,
+                    None => break,
+                }
+            };
+
+            if let Some(ref sink) = sink_clone {
+                match msg {
+                    Message::MouseMove { mut x, mut y } => {
+                        // Coalesce consecutive MouseMove messages to prevent D-Bus message queue saturation
+                        while let Ok(next) = input_rx.try_recv() {
+                            match next {
+                                Message::MouseMove { x: nx, y: ny } => {
+                                    x += nx;
+                                    y += ny;
+                                }
+                                other => {
+                                    pending_msg = Some(other);
+                                    break;
+                                }
                             }
-                            Message::MouseButton { button, state } => {
-                                let btn_code = match button {
-                                    1 => buttons::BTN_LEFT,
-                                    2 => buttons::BTN_RIGHT,
-                                    3 => buttons::BTN_MIDDLE,
-                                    _ => buttons::BTN_LEFT,
-                                };
-                                let btn_state = if state == 1 { ButtonState::Pressed } else { ButtonState::Released };
-                                let _ = sink.notify_pointer_button(btn_code, btn_state).await;
-                            }
-                            Message::MouseScroll { dy, .. } => {
-                                let steps = if dy > 0.0 { -1 } else { 1 };
-                                let _ = sink.notify_pointer_axis_discrete(0, steps).await;
-                            }
+                        }
+                        let _ = sink.notify_pointer_motion(x as f64, y as f64).await;
+                    }
+                    Message::MouseButton { button, state } => {
+                        let btn_code = match button {
+                            1 => buttons::BTN_LEFT,
+                            2 => buttons::BTN_RIGHT,
+                            3 => buttons::BTN_MIDDLE,
+                            _ => buttons::BTN_LEFT,
+                        };
+                        let btn_state = if state == 1 { ButtonState::Pressed } else { ButtonState::Released };
+                        let _ = sink.notify_pointer_button(btn_code, btn_state).await;
+                    }
+                    Message::MouseScroll { dx, dy } => {
+                        if dy.abs() > 0.001 {
+                            // Axis 0 = Vertical scroll
+                            let steps = if dy > 0.0 { -1 } else { 1 };
+                            let _ = sink.notify_pointer_axis_discrete(0, steps).await;
+                        }
+                        if dx.abs() > 0.001 {
+                            // Axis 1 = Horizontal scroll
+                            let steps = if dx > 0.0 { 1 } else { -1 };
+                            let _ = sink.notify_pointer_axis_discrete(1, steps).await;
+                        }
+                    }
                             Message::KeyDown { keycode } => {
                                 pressed_keys.insert(keycode);
                                 if (keycode & 0x8000_0000) != 0 || keycode > 0xFFF {
@@ -323,9 +352,6 @@ pub async fn run_session(
                         }
                     }
                 }
-                None => break,
-            }
-        }
 
         // Safety cleanup: release any keys still marked as pressed
         if let Some(ref sink) = sink_clone {
@@ -376,6 +402,7 @@ pub async fn run_session(
                 match telemetry_opt {
                     Some((latency_ms, client_fps)) => {
                         rate_controller.on_network_feedback(latency_ms, client_fps);
+                        encoder.set_bitrate(rate_controller.current_bitrate_bps);
                     }
                     None => {
                         break;

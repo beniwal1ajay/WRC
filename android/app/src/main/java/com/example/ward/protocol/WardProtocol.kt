@@ -283,11 +283,11 @@ sealed class WardMessage(val type: MessageType) {
         val fpsTarget: Short
     ) : WardMessage(MessageType.VIDEO_CONFIG) {
         override fun serialize(): ByteArray {
-            val buf = ByteBuffer.allocate(6).order(ByteOrder.BIG_ENDIAN)
+            val buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
             buf.putShort(width.toShort())
             buf.putShort(height.toShort())
-            buf.put(codec.toByte())
-            buf.put(fpsTarget.toByte())
+            buf.putShort(codec)
+            buf.putShort(fpsTarget)
             return buf.array()
         }
         companion object {
@@ -295,8 +295,8 @@ sealed class WardMessage(val type: MessageType) {
                 val buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN)
                 val width = buf.short.toInt() and 0xFFFF
                 val height = buf.short.toInt() and 0xFFFF
-                val codec = (buf.get().toInt() and 0xFF).toShort()
-                val fps = (buf.get().toInt() and 0xFF).toShort()
+                val codec = buf.short
+                val fps = buf.short
                 return VideoConfig(width, height, codec, fps)
             }
         }

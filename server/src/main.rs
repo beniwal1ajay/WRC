@@ -530,7 +530,7 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                                 }
                             };
 
-                            let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(8);
+                            let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(2);
                             let pw_running = session_running.clone();
                             let pw_stats = Arc::new(CaptureStats::default());
 
@@ -549,7 +549,7 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                                 }
                             };
 
-                            let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(4);
+                            let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(1);
 
                             // Bridge thread between sync PipeWire channel and async client channel
                             let bridge_running = session_running.clone();
