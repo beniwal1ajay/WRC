@@ -16,9 +16,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -35,6 +37,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import android.view.InputDevice
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import com.example.ward.MainActivity
 import com.example.ward.data.PairedDevice
@@ -147,6 +150,12 @@ class RemoteInputView(
     }
 }
 
+private tailrec fun Context.findMainActivity(): MainActivity? = when (this) {
+    is MainActivity -> this
+    is android.content.ContextWrapper -> baseContext?.findMainActivity() ?: MainActivity.currentInstance
+    else -> MainActivity.currentInstance
+}
+
 @Composable
 fun WardRemoteApp() {
     val context = LocalContext.current
@@ -168,6 +177,7 @@ fun WardRemoteApp() {
     val sessionStats by WardSessionManager.sessionStats.collectAsState()
     var showShortcuts by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+    var showQualityDialog by remember { mutableStateOf(false) }
 
     val prefRes = remember { deviceStore.getPreferredResolution() }
     val prefFpsVal = remember { deviceStore.getPreferredFps() }
@@ -182,7 +192,7 @@ fun WardRemoteApp() {
     var remoteInputView: RemoteInputView? by remember { mutableStateOf(null) }
 
     // Manage screen keep-awake and fullscreen immersive mode based on active connection
-    val activity = context as? MainActivity
+    val activity = remember(context) { context.findMainActivity() }
     DisposableEffect(connectionState) {
         if (connectionState is ConnectionState.Connected) {
             activity?.setKeepScreenOn(true)
@@ -194,6 +204,22 @@ fun WardRemoteApp() {
         onDispose {
             activity?.setKeepScreenOn(false)
             activity?.setImmersiveMode(false)
+        }
+    }
+
+    // Re-assert immersive mode on orientation flip and continuously while connected
+    val screenWidth = LocalConfiguration.current.screenWidthDp
+    val screenHeight = LocalConfiguration.current.screenHeightDp
+    val isLandscapeOrientation = screenWidth > screenHeight
+    LaunchedEffect(isLandscapeOrientation, connectionState) {
+        if (connectionState is ConnectionState.Connected) {
+            activity?.setImmersiveMode(true)
+        }
+    }
+
+    if (connectionState is ConnectionState.Connected) {
+        SideEffect {
+            activity?.setImmersiveMode(true)
         }
     }
 
@@ -600,8 +626,18 @@ fun WardRemoteApp() {
                                     Text("◀", fontSize = 11.sp, color = Color.White)
                                 }
 
-                                // Stats: FPS and Resolution & Transport Badge
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                // Stats: FPS and Resolution & Transport Badge (Click to open Quality Settings)
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showQualityDialog = !showQualityDialog
+                                        if (showQualityDialog) {
+                                            showDiagnostics = false
+                                            showShortcuts = false
+                                        }
+                                    }
+                                ) {
                                     Surface(
                                         color = if (sessionStats?.connectionType == TransportType.VPN) Color(0xFF0284C7) else Color(0xFF059669),
                                         shape = RoundedCornerShape(4.dp)
@@ -628,11 +664,15 @@ fun WardRemoteApp() {
                                     )
                                 }
 
-                                // Diagnostics Toggle
+                                // Diagnostics Toggle (Closes Keys & Quality)
                                 Button(
                                     onClick = {
                                         lastBarInteraction = System.currentTimeMillis()
                                         showDiagnostics = !showDiagnostics
+                                        if (showDiagnostics) {
+                                            showShortcuts = false
+                                            showQualityDialog = false
+                                        }
                                     },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = if (showDiagnostics) Color(0xFF0284C7) else Color(0xFF334155),
@@ -643,6 +683,27 @@ fun WardRemoteApp() {
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text("📊", fontSize = 13.sp, color = Color.White)
+                                }
+
+                                // Quality Settings Toggle (1080p/720p & 60/30 FPS)
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        showQualityDialog = !showQualityDialog
+                                        if (showQualityDialog) {
+                                            showDiagnostics = false
+                                            showShortcuts = false
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (showQualityDialog) Color(0xFF6366F1) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(30.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("⚙️", fontSize = 13.sp, color = Color.White)
                                 }
 
                                 HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp, modifier = Modifier.width(36.dp))
@@ -661,11 +722,15 @@ fun WardRemoteApp() {
                                     Text("⌨", fontSize = 15.sp, color = Color.White)
                                 }
 
-                                // Shortcuts Toggle
+                                // Shortcuts Toggle (Closes Diag & Quality)
                                 Button(
                                     onClick = {
                                         lastBarInteraction = System.currentTimeMillis()
                                         showShortcuts = !showShortcuts
+                                        if (showShortcuts) {
+                                            showDiagnostics = false
+                                            showQualityDialog = false
+                                        }
                                     },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
@@ -819,12 +884,29 @@ fun WardRemoteApp() {
                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                                         )
                                     }
-                                    Text(
-                                        text = "$fps FPS",
-                                        color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+
+                                    // Clickable Stream Resolution & FPS badge
+                                    Surface(
+                                        color = Color(0xFF1E293B),
+                                        shape = RoundedCornerShape(6.dp),
+                                        modifier = Modifier.clickable {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            showQualityDialog = !showQualityDialog
+                                            if (showQualityDialog) {
+                                                showDiagnostics = false
+                                                showShortcuts = false
+                                            }
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "${streamWidth}x${streamHeight} • $fps FPS",
+                                            color = if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                        )
+                                    }
+
                                     if (sessionStats != null && sessionStats!!.latencyMs > 0) {
                                         Text(
                                             text = "${sessionStats!!.latencyMs}ms",
@@ -834,10 +916,15 @@ fun WardRemoteApp() {
                                         )
                                     }
 
+                                    // Diagnostics Button (Closes Keys & Quality)
                                     Button(
                                         onClick = {
                                             lastBarInteraction = System.currentTimeMillis()
                                             showDiagnostics = !showDiagnostics
+                                            if (showDiagnostics) {
+                                                showShortcuts = false
+                                                showQualityDialog = false
+                                            }
                                         },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = if (showDiagnostics) Color(0xFF0284C7) else Color(0xFF334155),
@@ -848,6 +935,27 @@ fun WardRemoteApp() {
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Text("📊 Diag", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+
+                                    // Quality Button (1080p/720p & 60/30 FPS)
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            showQualityDialog = !showQualityDialog
+                                            if (showQualityDialog) {
+                                                showDiagnostics = false
+                                                showShortcuts = false
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (showQualityDialog) Color(0xFF6366F1) else Color(0xFF334155),
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("⚙️ Quality", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                     }
 
                                     // Direct Phone Keyboard Trigger
@@ -882,11 +990,15 @@ fun WardRemoteApp() {
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    // Quick Shortcuts Bar Toggle
+                                    // Quick Shortcuts Bar Toggle (Closes Diag & Quality)
                                     Button(
                                         onClick = {
                                             lastBarInteraction = System.currentTimeMillis()
                                             showShortcuts = !showShortcuts
+                                            if (showShortcuts) {
+                                                showDiagnostics = false
+                                                showQualityDialog = false
+                                            }
                                         },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = if (showShortcuts) Color(0xFF059669) else Color(0xFF334155),
@@ -1036,6 +1148,7 @@ fun WardRemoteApp() {
                                 navButton("Tab", Color(0xFF475569)) { sendKeysym(KEYSYM_TAB) }
                                 navButton("Enter", Color(0xFF2563EB)) { sendKeysym(KEYSYM_RETURN) }
                                 navButton("Bksp", Color(0xFFDC2626)) { sendKeysym(KEYSYM_BACKSPACE) }
+                                navButton("✕ Close", Color(0xFF475569)) { showShortcuts = false }
                             }
 
                             // Row 2: Clipboard & Arrow navigation
@@ -1084,10 +1197,13 @@ fun WardRemoteApp() {
                             colors = CardDefaults.cardColors(containerColor = Color(0xF20B1329)),
                             shape = RoundedCornerShape(14.dp),
                             border = BorderStroke(1.dp, Color(0x6638BDF8)),
-                            modifier = Modifier.width(280.dp)
+                            modifier = Modifier.width(310.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier
+                                    .padding(14.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .heightIn(max = if (isLandscape) 280.dp else 520.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Row(
@@ -1096,23 +1212,134 @@ fun WardRemoteApp() {
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "📡 CONNECTION DIAGNOSTICS",
+                                        text = "📡 DIAGNOSTICS & QUALITY",
                                         color = Color(0xFF38BDF8),
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
                                     )
                                     IconButton(
                                         onClick = { showDiagnostics = false },
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(22.dp)
                                     ) {
-                                        Text("✕", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                                        Text("✕", color = Color(0xFF94A3B8), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                                 HorizontalDivider(color = Color(0x3338BDF8), thickness = 1.dp)
 
-                                DiagnosticRow("Connection type:", sessionStats?.connectionType?.displayName ?: "LAN", Color(0xFF34D399))
+                                // STREAM RESOLUTION CONTROLS (PROMINENT AT TOP)
+                                Text(
+                                    text = "🎛 STREAM RESOLUTION",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            deviceStore.setPreferredResolution(1920, 1080)
+                                            WardSessionManager.requestStreamConfig(1920, 1080, targetFps)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (streamWidth >= 1920) Color(0xFF0284C7) else Color(0xFF1E293B)
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                        modifier = Modifier.weight(1f).height(34.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (streamWidth >= 1920) "✓ 1080p FHD" else "1080p FHD",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+                                    Button(
+                                        onClick = {
+                                            deviceStore.setPreferredResolution(1280, 720)
+                                            WardSessionManager.requestStreamConfig(1280, 720, targetFps)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (streamWidth < 1920) Color(0xFF0284C7) else Color(0xFF1E293B)
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                        modifier = Modifier.weight(1f).height(34.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (streamWidth < 1920) "✓ 720p HD" else "720p HD",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+                                }
+
+                                // STREAM FRAMERATE CONTROLS
+                                Text(
+                                    text = "⚡ TARGET FRAMERATE",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            deviceStore.setPreferredFps(60)
+                                            WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 60)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (targetFps >= 60) Color(0xFF059669) else Color(0xFF1E293B)
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                        modifier = Modifier.weight(1f).height(34.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (targetFps >= 60) "✓ 60 FPS" else "60 FPS",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+                                    Button(
+                                        onClick = {
+                                            deviceStore.setPreferredFps(30)
+                                            WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 30)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (targetFps < 60) Color(0xFF059669) else Color(0xFF1E293B)
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                        modifier = Modifier.weight(1f).height(34.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (targetFps < 60) "✓ 30 FPS" else "30 FPS",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
+                                }
+
+                                HorizontalDivider(color = Color(0x3338BDF8), thickness = 1.dp)
+
+                                Text(
+                                    text = "📊 LIVE TELEMETRY",
+                                    color = Color(0xFF94A3B8),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                DiagnosticRow("Connection:", sessionStats?.connectionType?.displayName ?: "LAN", Color(0xFF34D399))
                                 DiagnosticRow(
-                                    "Remote address:",
+                                    "Host address:",
                                     sessionStats?.remoteAddressMasked ?: maskIpAddress(host, portText.toIntOrNull() ?: 9740),
                                     Color.White
                                 )
@@ -1122,28 +1349,28 @@ fun WardRemoteApp() {
                                     if ((sessionStats?.latencyMs ?: 0) < 50) Color(0xFF10B981) else Color(0xFFF59E0B)
                                 )
                                 DiagnosticRow("Packet loss:", "${sessionStats?.packetLossPercent ?: 0}%", Color(0xFF10B981))
-                                DiagnosticRow("FPS:", "$fps", if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B))
+                                DiagnosticRow("Stream FPS:", "$fps FPS", if (fps >= 25) Color(0xFF10B981) else Color(0xFFF59E0B))
                                 val bitrateMbps = (sessionStats?.bitrateKbps ?: 0) / 1000f
                                 DiagnosticRow("Bitrate:", String.format("%.2f Mbps", bitrateMbps), Color.White)
-                                DiagnosticRow("Resolution:", "${streamWidth}x${streamHeight}", Color(0xFF94A3B8))
+                                DiagnosticRow("Resolution:", "${streamWidth}x${streamHeight}", Color(0xFF38BDF8))
+                            }
+                        }
+                    }
 
-                                HorizontalDivider(color = Color(0x3338BDF8), thickness = 1.dp)
-
-                                Text(
-                                    text = "🎛 STREAM QUALITY CONTROLS",
-                                    color = Color(0xFF38BDF8),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-
-                                // Resolution Switch
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Resolution:", color = Color(0xFF94A3B8), fontSize = 11.sp)
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // 7. Dedicated Stream Quality Modal Dialog (Invoked via ⚙️ Quality or Stats Badge)
+                    if (showQualityDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showQualityDialog = false },
+                            containerColor = Color(0xF20B1329),
+                            titleContentColor = Color.White,
+                            textContentColor = Color(0xFF94A3B8),
+                            title = {
+                                Text("🎛 Stream Quality & Resolution", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                            },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                    Text("Desktop Resolution:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Button(
                                             onClick = {
                                                 deviceStore.setPreferredResolution(1920, 1080)
@@ -1152,11 +1379,10 @@ fun WardRemoteApp() {
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = if (streamWidth >= 1920) Color(0xFF0284C7) else Color(0xFF1E293B)
                                             ),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(28.dp),
-                                            shape = RoundedCornerShape(6.dp)
+                                            modifier = Modifier.weight(1f).height(40.dp),
+                                            shape = RoundedCornerShape(8.dp)
                                         ) {
-                                            Text("1080p (Crisp)", fontSize = 10.sp, color = Color.White)
+                                            Text(if (streamWidth >= 1920) "✓ 1080p FHD" else "1080p FHD", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                         }
                                         Button(
                                             onClick = {
@@ -1166,23 +1392,15 @@ fun WardRemoteApp() {
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = if (streamWidth < 1920) Color(0xFF0284C7) else Color(0xFF1E293B)
                                             ),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(28.dp),
-                                            shape = RoundedCornerShape(6.dp)
+                                            modifier = Modifier.weight(1f).height(40.dp),
+                                            shape = RoundedCornerShape(8.dp)
                                         ) {
-                                            Text("720p", fontSize = 10.sp, color = Color.White)
+                                            Text(if (streamWidth < 1920) "✓ 720p HD" else "720p HD", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                         }
                                     }
-                                }
 
-                                // Framerate Switch
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Target FPS:", color = Color(0xFF94A3B8), fontSize = 11.sp)
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("Stream Target Framerate:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Button(
                                             onClick = {
                                                 deviceStore.setPreferredFps(60)
@@ -1191,11 +1409,10 @@ fun WardRemoteApp() {
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = if (targetFps >= 60) Color(0xFF059669) else Color(0xFF1E293B)
                                             ),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(28.dp),
-                                            shape = RoundedCornerShape(6.dp)
+                                            modifier = Modifier.weight(1f).height(40.dp),
+                                            shape = RoundedCornerShape(8.dp)
                                         ) {
-                                            Text("60 FPS", fontSize = 10.sp, color = Color.White)
+                                            Text(if (targetFps >= 60) "✓ 60 FPS" else "60 FPS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                         }
                                         Button(
                                             onClick = {
@@ -1205,16 +1422,23 @@ fun WardRemoteApp() {
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = if (targetFps < 60) Color(0xFF059669) else Color(0xFF1E293B)
                                             ),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(28.dp),
-                                            shape = RoundedCornerShape(6.dp)
+                                            modifier = Modifier.weight(1f).height(40.dp),
+                                            shape = RoundedCornerShape(8.dp)
                                         ) {
-                                            Text("30 FPS", fontSize = 10.sp, color = Color.White)
+                                            Text(if (targetFps < 60) "✓ 30 FPS" else "30 FPS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                         }
                                     }
                                 }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = { showQualityDialog = false },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                                ) {
+                                    Text("Done", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
                             }
-                        }
+                        )
                     }
                 }
             }

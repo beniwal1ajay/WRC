@@ -19,6 +19,11 @@ import com.example.ward.ui.stream.WardRemoteApp
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        var currentInstance: MainActivity? = null
+            private set
+    }
+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* Permission result handled */ }
@@ -27,16 +32,30 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        currentInstance = this
 
         // Allow drawing edge-to-edge behind system bars and into display cutouts
         WindowCompat.setDecorFitsSystemWindows(window, false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            window.attributes.layoutInDisplayCutoutMode =
+            val lp = window.attributes
+            lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            window.attributes = lp
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        @Suppress("DEPRECATION")
+        window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
+            if (isImmersiveRequested && (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                window.decorView.postDelayed({
+                    if (isImmersiveRequested) {
+                        applyImmersiveMode(true)
+                    }
+                }, 300)
+            }
         }
 
         setContent {
@@ -51,6 +70,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        if (currentInstance == this) {
+            currentInstance = null
+        }
+    }
+
     /**
      * Controls fullscreen immersive sticky mode.
      * When enabled, hides Android status and navigation bars, allowing full display utilization
@@ -60,6 +86,11 @@ class MainActivity : ComponentActivity() {
         isImmersiveRequested = enable
         runOnUiThread {
             applyImmersiveMode(enable)
+            window.decorView.post {
+                if (isImmersiveRequested == enable) {
+                    applyImmersiveMode(enable)
+                }
+            }
         }
     }
 
@@ -67,13 +98,18 @@ class MainActivity : ComponentActivity() {
         val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
         if (enable) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                window.attributes.layoutInDisplayCutoutMode =
+                val lp = window.attributes
+                lp.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                window.attributes = lp
             }
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN)
             window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
 
             windowInsetsController.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
+            windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
             windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
 
             @Suppress("DEPRECATION")
@@ -87,15 +123,26 @@ class MainActivity : ComponentActivity() {
             )
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                window.attributes.layoutInDisplayCutoutMode =
+                val lp = window.attributes
+                lp.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                window.attributes = lp
             }
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
 
+            windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
+            windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
             windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
 
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (isImmersiveRequested) {
+            window.decorView.post { applyImmersiveMode(true) }
         }
     }
 
