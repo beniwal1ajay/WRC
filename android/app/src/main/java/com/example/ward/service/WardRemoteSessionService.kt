@@ -27,63 +27,80 @@ class WardRemoteSessionService : Service() {
         const val EXTRA_HOST = "extra_host"
 
         fun start(context: Context, host: String) {
-            val intent = Intent(context, WardRemoteSessionService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_HOST, host)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                val intent = Intent(context, WardRemoteSessionService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_HOST, host)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "WardRemoteSessionService.start error: ${e.message}")
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, WardRemoteSessionService::class.java).apply {
-                action = ACTION_DISCONNECT
+            try {
+                val intent = Intent(context, WardRemoteSessionService::class.java).apply {
+                    action = ACTION_DISCONNECT
+                }
+                context.startService(intent)
+            } catch (e: Throwable) {
+                Log.w(TAG, "WardRemoteSessionService.stop error: ${e.message}")
             }
-            context.startService(intent)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        try {
+            createNotificationChannel()
+        } catch (e: Throwable) {
+            Log.w(TAG, "createNotificationChannel error: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
                 val host = intent.getStringExtra(EXTRA_HOST) ?: "Remote Host"
-                val notification = buildNotification(host)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                try {
+                    val notification = buildNotification(host)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(
                             NOTIFICATION_ID,
                             notification,
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                         )
                     } else {
-                        startForeground(
-                            NOTIFICATION_ID,
-                            notification,
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                        )
+                        startForeground(NOTIFICATION_ID, notification)
                     }
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
+                    Log.i(TAG, "WardRemoteSessionService started in foreground for host: $host")
+                } catch (e: Throwable) {
+                    Log.e(TAG, "startForeground error: ${e.message}", e)
+                    try {
+                        stopSelf()
+                    } catch (_: Throwable) {}
                 }
-                Log.i(TAG, "WardRemoteSessionService started in foreground for host: $host")
             }
             ACTION_DISCONNECT -> {
                 Log.i(TAG, "WardRemoteSessionService received disconnect action")
-                WardSessionManager.disconnect(this)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
+                try {
+                    WardSessionManager.disconnect(this)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "disconnect error: ${e.message}")
                 }
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        stopForeground(true)
+                    }
+                } catch (_: Throwable) {}
                 stopSelf()
             }
         }

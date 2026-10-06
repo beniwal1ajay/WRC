@@ -87,10 +87,14 @@ object WardSessionManager {
             transport = transport,
             onStateChanged = { newState ->
                 _connectionState.value = newState
-                if (newState is ConnectionState.Connected) {
-                    WardRemoteSessionService.start(context.applicationContext, host)
-                } else if (newState is ConnectionState.Disconnected) {
-                    WardRemoteSessionService.stop(context.applicationContext)
+                try {
+                    if (newState is ConnectionState.Connected) {
+                        WardRemoteSessionService.start(context.applicationContext, host)
+                    } else if (newState is ConnectionState.Disconnected) {
+                        WardRemoteSessionService.stop(context.applicationContext)
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "WardRemoteSessionService toggle error: ${e.message}")
                 }
             },
             onVideoConfig = { width, height, fps ->

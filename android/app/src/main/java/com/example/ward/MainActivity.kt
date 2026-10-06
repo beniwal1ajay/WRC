@@ -54,19 +54,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        try {
-            @Suppress("DEPRECATION")
-            window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
-                if (isImmersiveRequested && (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
-                    window.decorView.postDelayed({
-                        if (isImmersiveRequested) {
-                            applyImmersiveMode(true)
-                        }
-                    }, 300)
-                }
-            }
-        } catch (e: Throwable) {
-            android.util.Log.w("MainActivity", "VisibilityListener error: ${e.message}")
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            android.util.Log.e("WARD_FATAL", "Uncaught exception on thread ${thread.name}: ${throwable.message}", throwable)
         }
 
         setContent {
@@ -97,11 +86,6 @@ class MainActivity : ComponentActivity() {
         isImmersiveRequested = enable
         runOnUiThread {
             applyImmersiveMode(enable)
-            window.decorView.post {
-                if (isImmersiveRequested == enable) {
-                    applyImmersiveMode(enable)
-                }
-            }
         }
     }
 
@@ -111,43 +95,25 @@ class MainActivity : ComponentActivity() {
             if (enable) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val lp = window.attributes
-                    lp.layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                    window.attributes = lp
+                    if (lp.layoutInDisplayCutoutMode != WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES) {
+                        lp.layoutInDisplayCutoutMode =
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                        window.attributes = lp
+                    }
                 }
-                window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN)
-                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
-
                 windowInsetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-                windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
-                windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
-
-                @Suppress("DEPRECATION")
-                window.decorView.systemUiVisibility = (
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    or View.SYSTEM_UI_FLAG_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                )
             } else {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val lp = window.attributes
-                    lp.layoutInDisplayCutoutMode =
-                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-                    window.attributes = lp
+                    if (lp.layoutInDisplayCutoutMode != WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT) {
+                        lp.layoutInDisplayCutoutMode =
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                        window.attributes = lp
+                    }
                 }
-                window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
-
                 windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-                windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
-                windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
-
-                @Suppress("DEPRECATION")
-                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
             }
         } catch (e: Throwable) {
             android.util.Log.w("MainActivity", "applyImmersiveMode error: ${e.message}")
