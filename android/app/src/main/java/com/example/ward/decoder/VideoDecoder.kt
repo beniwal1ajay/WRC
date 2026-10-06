@@ -14,7 +14,6 @@ private const val TAG = "VideoDecoder"
 private const val MIME_TYPE = "video/avc"
 
 class VideoDecoder(
-    private val surface: Surface,
     private val onFpsUpdate: (fps: Int) -> Unit = {}
 ) {
     private var codec: MediaCodec? = null
@@ -25,8 +24,44 @@ class VideoDecoder(
     private val mainHandler = Handler(Looper.getMainLooper())
     private var hasSeenKeyframe = false
 
+    private var currentSurface: Surface? = null
+    private var lastWidth: Int = 1280
+    private var lastHeight: Int = 720
+
+    @Synchronized
+    fun attachSurface(surface: Surface) {
+        currentSurface = surface
+        val decoder = codec
+        if (decoder != null && isRunning.get()) {
+            try {
+                decoder.setOutputSurface(surface)
+                Log.i(TAG, "MediaCodec output surface updated via setOutputSurface")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "setOutputSurface failed, re-initializing decoder: ${e.message}")
+            }
+        }
+        if (lastWidth > 0 && lastHeight > 0) {
+            start(lastWidth, lastHeight)
+        }
+    }
+
+    @Synchronized
+    fun detachSurface() {
+        currentSurface = null
+        hasSeenKeyframe = false
+    }
+
     @Synchronized
     fun start(width: Int, height: Int) {
+        lastWidth = width
+        lastHeight = height
+
+        val targetSurface = currentSurface ?: run {
+            Log.d(TAG, "Decoder start requested before surface attached; deferred until surfaceCreated")
+            return
+        }
+
         stop()
 
         try {
@@ -38,10 +73,11 @@ class VideoDecoder(
             }
 
             val decoder = MediaCodec.createDecoderByType(MIME_TYPE)
-            decoder.configure(format, surface, null, 0)
+            decoder.configure(format, targetSurface, null, 0)
             decoder.start()
             codec = decoder
             isRunning.set(true)
+            hasSeenKeyframe = false
 
             // Start dedicated output draining loop
             outputThread = Thread({ drainOutput(decoder) }, "WARD-Decoder-Output").apply {
@@ -56,6 +92,11 @@ class VideoDecoder(
     }
 
     fun feedFrame(data: ByteArray, timestampNs: Long, isKeyframe: Boolean) {
+        if (currentSurface == null) {
+            // Drop frames while app is in background to conserve CPU and battery
+            return
+        }
+
         val decoder = codec ?: return
         if (!isRunning.get()) return
 
@@ -91,16 +132,19 @@ class VideoDecoder(
                 when {
                     outIndex >= 0 -> {
                         // Render directly to the surface
-                        decoder.releaseOutputBuffer(outIndex, true)
+                        val shouldRender = currentSurface != null
+                        decoder.releaseOutputBuffer(outIndex, shouldRender)
 
-                        val count = frameCounter.incrementAndGet()
-                        val now = System.currentTimeMillis()
-                        if (now - lastFpsTime >= 1000) {
-                            val elapsedSec = (now - lastFpsTime) / 1000.0
-                            val fps = (count / elapsedSec).toInt()
-                            mainHandler.post { onFpsUpdate(fps) }
-                            frameCounter.set(0)
-                            lastFpsTime = now
+                        if (shouldRender) {
+                            val count = frameCounter.incrementAndGet()
+                            val now = System.currentTimeMillis()
+                            if (now - lastFpsTime >= 1000) {
+                                val elapsedSec = (now - lastFpsTime) / 1000.0
+                                val fps = (count / elapsedSec).toInt()
+                                mainHandler.post { onFpsUpdate(fps) }
+                                frameCounter.set(0)
+                                lastFpsTime = now
+                            }
                         }
                     }
                     outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {

@@ -32,7 +32,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.view.InputDevice
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.platform.LocalContext
+import com.example.ward.MainActivity
 import com.example.ward.data.PairedDevice
 import com.example.ward.data.PairedDeviceStore
 import com.example.ward.decoder.VideoDecoder
@@ -40,6 +44,7 @@ import com.example.ward.network.ConnectionState
 import com.example.ward.network.SessionStats
 import com.example.ward.network.WardClient
 import com.example.ward.protocol.WardMessage
+import com.example.ward.service.WardSessionManager
 import com.example.ward.transport.TransportType
 import com.example.ward.transport.maskIpAddress
 import kotlinx.coroutines.Dispatchers
@@ -155,12 +160,12 @@ fun WardRemoteApp() {
     var pendingPinCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var enteredPinText by remember { mutableStateOf("") }
 
-    var connectionState by remember { mutableStateOf<ConnectionState>(ConnectionState.Disconnected) }
-    var fps by remember { mutableIntStateOf(0) }
-    var streamWidth by remember { mutableIntStateOf(1920) }
-    var streamHeight by remember { mutableIntStateOf(1080) }
+    val connectionState by WardSessionManager.connectionState.collectAsState()
+    val fps by WardSessionManager.fps.collectAsState()
+    val streamWidth by WardSessionManager.streamWidth.collectAsState()
+    val streamHeight by WardSessionManager.streamHeight.collectAsState()
+    val sessionStats by WardSessionManager.sessionStats.collectAsState()
     var showShortcuts by remember { mutableStateOf(false) }
-    var sessionStats by remember { mutableStateOf<SessionStats?>(null) }
     var showDiagnostics by remember { mutableStateOf(false) }
 
     // Auto-contracting bar state & interaction timer
@@ -168,8 +173,22 @@ fun WardRemoteApp() {
     var lastBarInteraction by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     var remoteInputView: RemoteInputView? by remember { mutableStateOf(null) }
-    var videoDecoder: VideoDecoder? by remember { mutableStateOf(null) }
-    var wardClient: WardClient? by remember { mutableStateOf(null) }
+
+    // Manage screen keep-awake and fullscreen immersive mode based on active connection
+    val activity = context as? MainActivity
+    DisposableEffect(connectionState) {
+        if (connectionState is ConnectionState.Connected) {
+            activity?.setKeepScreenOn(true)
+            activity?.setImmersiveMode(true)
+        } else {
+            activity?.setKeepScreenOn(false)
+            activity?.setImmersiveMode(false)
+        }
+        onDispose {
+            activity?.setKeepScreenOn(false)
+            activity?.setImmersiveMode(false)
+        }
+    }
 
     // Probe host reachability periodically ONLY when idle in Disconnected state
     LaunchedEffect(host, portText, connectionState) {
@@ -198,14 +217,14 @@ fun WardRemoteApp() {
 
     fun sendKeysym(keysym: Int) {
         val code = keysym or KEYSYM_FLAG
-        wardClient?.sendKeyPress(code)
+        WardSessionManager.sendKeyPress(code)
     }
 
     fun sendCtrlKey(evdevKey: Int) {
-        wardClient?.sendInput(WardMessage.KeyDown(EVDEV_KEY_LEFTCTRL))
-        wardClient?.sendInput(WardMessage.KeyDown(evdevKey))
-        wardClient?.sendInput(WardMessage.KeyUp(evdevKey))
-        wardClient?.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
+        WardSessionManager.sendInput(WardMessage.KeyDown(EVDEV_KEY_LEFTCTRL))
+        WardSessionManager.sendInput(WardMessage.KeyDown(evdevKey))
+        WardSessionManager.sendInput(WardMessage.KeyUp(evdevKey))
+        WardSessionManager.sendInput(WardMessage.KeyUp(EVDEV_KEY_LEFTCTRL))
     }
 
     fun showKeyboard() {
@@ -221,13 +240,6 @@ fun WardRemoteApp() {
         if (!isBarCollapsed) {
             delay(8000)
             isBarCollapsed = true
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            wardClient?.disconnect()
-            videoDecoder?.stop()
         }
     }
 
@@ -262,21 +274,13 @@ fun WardRemoteApp() {
                             SurfaceView(ctx).apply {
                                 holder.addCallback(object : SurfaceHolder.Callback {
                                     override fun surfaceCreated(holder: SurfaceHolder) {
-                                        val decoder = VideoDecoder(holder.surface) { newFps ->
-                                            fps = newFps
-                                        }
-                                        videoDecoder = decoder
-                                        if (streamWidth > 0 && streamHeight > 0) {
-                                            decoder.start(streamWidth, streamHeight)
-                                        }
-                                        wardClient?.requestKeyframe()
+                                        WardSessionManager.attachSurface(holder.surface)
                                     }
 
                                     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
 
                                     override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                        videoDecoder?.stop()
-                                        videoDecoder = null
+                                        WardSessionManager.detachSurface()
                                     }
                                 })
                             }
@@ -284,7 +288,7 @@ fun WardRemoteApp() {
                     )
                 }
 
-                // 2. Full-screen Multi-Gesture Touchpad Overlay (handles video + blank area below)
+                // 2. Full-screen Multi-Gesture Touchpad Overlay with System UI boundaries & mouse support
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
@@ -304,9 +308,111 @@ fun WardRemoteApp() {
                             var accumulatedDy = 0f
                             var lastMoveDispatchTime = 0L
 
+                            // Generic motion listener for physical mouse scroll wheels & hover motion
+                            setOnGenericMotionListener { _, event ->
+                                if (event.isFromSource(InputDevice.SOURCE_MOUSE) || event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
+                                    when (event.action) {
+                                        MotionEvent.ACTION_SCROLL -> {
+                                            val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                                            val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+                                            if (Math.abs(vScroll) > 0.01f) {
+                                                val stepY = if (vScroll > 0) -1.0f else 1.0f
+                                                WardSessionManager.sendInput(WardMessage.MouseScroll(0f, stepY))
+                                            }
+                                            if (Math.abs(hScroll) > 0.01f) {
+                                                val stepX = if (hScroll > 0) 1.0f else -1.0f
+                                                WardSessionManager.sendInput(WardMessage.MouseScroll(stepX, 0f))
+                                            }
+                                            true
+                                        }
+                                        MotionEvent.ACTION_HOVER_MOVE -> {
+                                            val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                                            val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                                            if (rx != 0f || ry != 0f) {
+                                                WardSessionManager.sendInput(WardMessage.MouseMove(rx, ry))
+                                            }
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                } else false
+                            }
+
                             setOnTouchListener { v, event ->
                                 pointerCount = event.pointerCount
 
+                                // Check system UI insets to prevent touches in navigation / status zones
+                                val insets = ViewCompat.getRootWindowInsets(v)?.getInsets(WindowInsetsCompat.Type.systemBars())
+                                val topInset = insets?.top?.toFloat() ?: 0f
+                                val bottomInset = insets?.bottom?.toFloat() ?: 0f
+                                val leftInset = insets?.left?.toFloat() ?: 0f
+                                val rightInset = insets?.right?.toFloat() ?: 0f
+
+                                val isLand = v.width > v.height
+                                val vAspect = if (streamWidth > 0 && streamHeight > 0) streamWidth.toFloat() / streamHeight.toFloat() else 16f / 9f
+                                val cAspect = v.width.toFloat() / v.height.toFloat()
+
+                                // Calculate exact display rendering bounds (pillarbox / letterbox)
+                                val (videoLeft, videoTop, videoRight, videoBottom) = if (cAspect > vAspect) {
+                                    val actualW = v.height.toFloat() * vAspect
+                                    val padX = (v.width.toFloat() - actualW) / 2f
+                                    floatArrayOf(padX, 0f, padX + actualW, v.height.toFloat())
+                                } else {
+                                    val actualH = v.width.toFloat() / vAspect
+                                    val padY = (v.height.toFloat() - actualH) / 2f
+                                    floatArrayOf(0f, padY, v.width.toFloat(), padY + actualH)
+                                }
+
+                                // If touch starts outside allowable region, yield to Android system
+                                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                                    // Check system insets boundary (navigation bar / status bar)
+                                    if (event.y < topInset || event.y > v.height - bottomInset ||
+                                        event.x < leftInset || event.x > v.width - rightInset) {
+                                        return@setOnTouchListener false
+                                    }
+
+                                    // In landscape mode, reject touches starting outside video pillarbox/letterbox
+                                    if (isLand) {
+                                        if (event.x < videoLeft || event.x > videoRight || event.y < videoTop || event.y > videoBottom) {
+                                            return@setOnTouchListener false
+                                        }
+                                    }
+                                }
+
+                                // Physical mouse button events
+                                if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            val buttonState = event.buttonState
+                                            if ((buttonState and MotionEvent.BUTTON_PRIMARY) != 0) {
+                                                WardSessionManager.sendInput(WardMessage.MouseButton(1, 1))
+                                            }
+                                            if ((buttonState and MotionEvent.BUTTON_SECONDARY) != 0) {
+                                                WardSessionManager.sendInput(WardMessage.MouseButton(2, 1))
+                                            }
+                                            if ((buttonState and MotionEvent.BUTTON_TERTIARY) != 0) {
+                                                WardSessionManager.sendInput(WardMessage.MouseButton(3, 1))
+                                            }
+                                            return@setOnTouchListener true
+                                        }
+                                        MotionEvent.ACTION_UP -> {
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 0))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(2, 0))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(3, 0))
+                                            return@setOnTouchListener true
+                                        }
+                                        MotionEvent.ACTION_MOVE -> {
+                                            val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                                            val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                                            if (rx != 0f || ry != 0f) {
+                                                WardSessionManager.sendInput(WardMessage.MouseMove(rx, ry))
+                                            }
+                                            return@setOnTouchListener true
+                                        }
+                                    }
+                                }
+
+                                // Virtual touchpad gesture handling
                                 when (event.actionMasked) {
                                     MotionEvent.ACTION_DOWN -> {
                                         downX = event.x
@@ -351,14 +457,13 @@ fun WardRemoteApp() {
                                             // Enter drag mode if held down for > 350ms
                                             if (!isDragging && now - downTime > 350 && totalDist < 25) {
                                                 isDragging = true
-                                                // Mouse button down for drag & drop / text selection
-                                                wardClient?.sendInput(WardMessage.MouseButton(1, 1))
+                                                WardSessionManager.sendInput(WardMessage.MouseButton(1, 1))
                                             }
 
                                             // Pace pointer updates to ~100Hz max to avoid D-Bus saturation
                                             if (now - lastMoveDispatchTime >= 10L) {
                                                 if (accumulatedDx != 0f || accumulatedDy != 0f) {
-                                                    wardClient?.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
+                                                    WardSessionManager.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
                                                     accumulatedDx = 0f
                                                     accumulatedDy = 0f
                                                 }
@@ -375,15 +480,13 @@ fun WardRemoteApp() {
                                             val dx = ((currentX1 - lastX1) + (currentX2 - lastX2)) / 2f
 
                                             if (Math.abs(dy) > 2f) {
-                                                // Positive dy (finger down) -> scroll down (-1)
-                                                // Negative dy (finger up) -> scroll up (1)
                                                 val stepY = if (dy > 0) 1.0f else -1.0f
-                                                wardClient?.sendInput(WardMessage.MouseScroll(0f, stepY))
+                                                WardSessionManager.sendInput(WardMessage.MouseScroll(0f, stepY))
                                             }
 
                                             if (Math.abs(dx) > 4f) {
                                                 val stepX = if (dx > 0) 1.0f else -1.0f
-                                                wardClient?.sendInput(WardMessage.MouseScroll(stepX, 0f))
+                                                WardSessionManager.sendInput(WardMessage.MouseScroll(stepX, 0f))
                                             }
 
                                             lastX1 = currentX1
@@ -395,7 +498,7 @@ fun WardRemoteApp() {
                                             val currentY = event.getY(0)
                                             if (threeFingerSwipeStartY - currentY > 120f) {
                                                 sendKeysym(KEYSYM_SUPER)
-                                                threeFingerSwipeStartY = currentY // reset to prevent retrigger
+                                                threeFingerSwipeStartY = currentY
                                             }
                                         }
                                         true
@@ -404,20 +507,18 @@ fun WardRemoteApp() {
                                     MotionEvent.ACTION_POINTER_UP -> {
                                         val duration = System.currentTimeMillis() - downTime
                                         if (pointerCount == 2 && duration < 250) {
-                                            // 2-finger tap -> Right Click!
-                                            wardClient?.sendInput(WardMessage.MouseButton(2, 1))
-                                            wardClient?.sendInput(WardMessage.MouseButton(2, 0))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(2, 1))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(2, 0))
                                         } else if (pointerCount == 3 && duration < 250) {
-                                            // 3-finger tap -> Middle Click!
-                                            wardClient?.sendInput(WardMessage.MouseButton(3, 1))
-                                            wardClient?.sendInput(WardMessage.MouseButton(3, 0))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(3, 1))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(3, 0))
                                         }
                                         true
                                     }
 
                                     MotionEvent.ACTION_UP -> {
                                         if (accumulatedDx != 0f || accumulatedDy != 0f) {
-                                            wardClient?.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
+                                            WardSessionManager.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
                                             accumulatedDx = 0f
                                             accumulatedDy = 0f
                                         }
@@ -426,13 +527,11 @@ fun WardRemoteApp() {
                                         val dist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
 
                                         if (isDragging) {
-                                            // Release drag
-                                            wardClient?.sendInput(WardMessage.MouseButton(1, 0))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 0))
                                             isDragging = false
                                         } else if (duration < 220 && dist < 20) {
-                                            // 1-finger quick tap -> Left Click
-                                            wardClient?.sendInput(WardMessage.MouseButton(1, 1))
-                                            wardClient?.sendInput(WardMessage.MouseButton(1, 0))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 1))
+                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 0))
                                         }
                                         true
                                     }
@@ -583,7 +682,7 @@ fun WardRemoteApp() {
                                 Button(
                                     onClick = {
                                         lastBarInteraction = System.currentTimeMillis()
-                                        wardClient?.requestKeyframe()
+                                        WardSessionManager.requestKeyframe()
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569), contentColor = Color.White),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
@@ -596,9 +695,7 @@ fun WardRemoteApp() {
                                 // Disconnect / Exit
                                 Button(
                                     onClick = {
-                                        wardClient?.disconnect()
-                                        videoDecoder?.stop()
-                                        connectionState = ConnectionState.Disconnected
+                                        WardSessionManager.disconnect(context)
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
@@ -651,7 +748,7 @@ fun WardRemoteApp() {
                     ) {
                         // Scroll Up button
                         Button(
-                            onClick = { wardClient?.sendInput(WardMessage.MouseScroll(0f, -1.0f)) },
+                            onClick = { WardSessionManager.sendInput(WardMessage.MouseScroll(0f, -1.0f)) },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC141824), contentColor = Color.White),
                             border = BorderStroke(1.dp, Color(0x44FFFFFF)),
                             shape = RoundedCornerShape(24.dp),
@@ -664,7 +761,7 @@ fun WardRemoteApp() {
 
                         // Scroll Down button
                         Button(
-                            onClick = { wardClient?.sendInput(WardMessage.MouseScroll(0f, 1.0f)) },
+                            onClick = { WardSessionManager.sendInput(WardMessage.MouseScroll(0f, 1.0f)) },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC141824), contentColor = Color.White),
                             border = BorderStroke(1.dp, Color(0x44FFFFFF)),
                             shape = RoundedCornerShape(24.dp),
@@ -806,7 +903,7 @@ fun WardRemoteApp() {
                                     Button(
                                         onClick = {
                                             lastBarInteraction = System.currentTimeMillis()
-                                            wardClient?.requestKeyframe()
+                                            WardSessionManager.requestKeyframe()
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569), contentColor = Color.White),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
@@ -819,9 +916,7 @@ fun WardRemoteApp() {
                                     // Disconnect Session
                                     Button(
                                         onClick = {
-                                            wardClient?.disconnect()
-                                            videoDecoder?.stop()
-                                            connectionState = ConnectionState.Disconnected
+                                            WardSessionManager.disconnect(context)
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626), contentColor = Color.White),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
@@ -929,10 +1024,10 @@ fun WardRemoteApp() {
 
                                 // Dedicated Scroll Up / Down ticks
                                 navButton("▲ Scroll Up", Color(0xFF0D9488)) {
-                                    wardClient?.sendInput(WardMessage.MouseScroll(0f, -1.0f))
+                                    WardSessionManager.sendInput(WardMessage.MouseScroll(0f, -1.0f))
                                 }
                                 navButton("▼ Scroll Down", Color(0xFF0D9488)) {
-                                    wardClient?.sendInput(WardMessage.MouseScroll(0f, 1.0f))
+                                    WardSessionManager.sendInput(WardMessage.MouseScroll(0f, 1.0f))
                                 }
                                 navButton("PgUp", Color(0xFF334155)) { sendKeysym(KEYSYM_PAGE_UP) }
                                 navButton("PgDn", Color(0xFF334155)) { sendKeysym(KEYSYM_PAGE_DOWN) }
@@ -1211,43 +1306,19 @@ fun WardRemoteApp() {
                             Button(
                                 onClick = {
                                     val port = portText.toIntOrNull() ?: 9740
-                                    val transport = com.example.ward.transport.LanTlsTransport(
-                                        pinnedCertProvider = { deviceStore.getPinnedCertSha256() },
-                                        onCertDiscovered = { fp ->
-                                            deviceStore.setPinnedCertSha256(fp)
-                                        }
-                                    )
-                                    val client = WardClient(
-                                        transport = transport,
-                                        onStateChanged = { newState ->
-                                            connectionState = newState
-                                        },
-                                        onVideoConfig = { w, h, _ ->
-                                            streamWidth = w
-                                            streamHeight = h
-                                            videoDecoder?.start(w, h)
-                                        },
-                                        onVideoFrame = { data, ts, isKeyframe ->
-                                            videoDecoder?.feedFrame(data, ts, isKeyframe)
-                                        },
-                                        onSessionAccepted = { accepted ->
-                                            val updated = deviceStore.updateFromSession(accepted, host.trim(), port)
-                                            pairedDevice = updated
-                                        },
-                                        onStatsUpdated = { stats ->
-                                            sessionStats = stats
-                                        },
-                                        clientDeviceId = deviceStore.getOrCreateClientDeviceId(),
-                                        authToken = deviceStore.getAuthToken(),
+                                    WardSessionManager.connect(
+                                        context = context,
+                                        host = host.trim(),
+                                        port = port,
+                                        pairedDevice = pairedDevice,
+                                        deviceStore = deviceStore,
                                         onPinRequired = { callback ->
                                             pendingPinCallback = callback
                                         },
-                                        onTokenInvalidated = {
-                                            deviceStore.saveAuthToken("")
+                                        onDeviceUpdated = { updated ->
+                                            pairedDevice = updated
                                         }
                                     )
-                                    wardClient = client
-                                    client.connect(host.trim(), port)
                                 },
                                 enabled = state !is ConnectionState.Connecting && state !is ConnectionState.Reconnecting,
                                 modifier = Modifier.fillMaxWidth().height(52.dp),
@@ -1278,7 +1349,7 @@ fun WardRemoteApp() {
                             if (state is ConnectionState.Reconnecting) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 TextButton(
-                                    onClick = { wardClient?.disconnect() }
+                                    onClick = { WardSessionManager.disconnect(context) }
                                 ) {
                                     Text("Cancel Reconnect", color = Color(0xFFF87171), fontSize = 12.sp)
                                 }
