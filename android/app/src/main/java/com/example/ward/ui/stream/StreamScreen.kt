@@ -877,7 +877,7 @@ fun WardRemoteApp() {
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = "v1.1 • " + (sessionStats?.connectionType?.displayName ?: "LAN"),
+                                            text = "v1.2 • " + (sessionStats?.connectionType?.displayName ?: "LAN"),
                                             color = Color.White,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,

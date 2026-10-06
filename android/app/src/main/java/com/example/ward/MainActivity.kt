@@ -112,6 +112,18 @@ class MainActivity : ComponentActivity() {
             windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
             windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window.insetsController?.let { controller ->
+                    controller.systemBarsBehavior =
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(
+                        android.view.WindowInsets.Type.statusBars()
+                        or android.view.WindowInsets.Type.navigationBars()
+                        or android.view.WindowInsets.Type.systemBars()
+                    )
+                }
+            }
+
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = (
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -133,6 +145,16 @@ class MainActivity : ComponentActivity() {
             windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
             windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
             windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window.insetsController?.let { controller ->
+                    controller.show(
+                        android.view.WindowInsets.Type.statusBars()
+                        or android.view.WindowInsets.Type.navigationBars()
+                        or android.view.WindowInsets.Type.systemBars()
+                    )
+                }
+            }
 
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
