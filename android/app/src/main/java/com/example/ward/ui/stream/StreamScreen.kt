@@ -162,11 +162,18 @@ fun WardRemoteApp() {
 
     val connectionState by WardSessionManager.connectionState.collectAsState()
     val fps by WardSessionManager.fps.collectAsState()
+    val targetFps by WardSessionManager.targetFps.collectAsState()
     val streamWidth by WardSessionManager.streamWidth.collectAsState()
     val streamHeight by WardSessionManager.streamHeight.collectAsState()
     val sessionStats by WardSessionManager.sessionStats.collectAsState()
     var showShortcuts by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+
+    val prefRes = remember { deviceStore.getPreferredResolution() }
+    val prefFpsVal = remember { deviceStore.getPreferredFps() }
+    var selectedResWidth by remember { mutableIntStateOf(prefRes.first) }
+    var selectedResHeight by remember { mutableIntStateOf(prefRes.second) }
+    var selectedFps by remember { mutableIntStateOf(prefFpsVal) }
 
     // Auto-contracting bar state & interaction timer
     var isBarCollapsed by remember { mutableStateOf(false) }
@@ -187,6 +194,15 @@ fun WardRemoteApp() {
         onDispose {
             activity?.setKeepScreenOn(false)
             activity?.setImmersiveMode(false)
+        }
+    }
+
+    // Apply preferred stream resolution and framerate immediately when connection is established
+    LaunchedEffect(connectionState) {
+        if (connectionState is ConnectionState.Connected) {
+            val (w, h) = deviceStore.getPreferredResolution()
+            val f = deviceStore.getPreferredFps()
+            WardSessionManager.requestStreamConfig(w, h, f)
         }
     }
 
@@ -341,14 +357,6 @@ fun WardRemoteApp() {
                             setOnTouchListener { v, event ->
                                 pointerCount = event.pointerCount
 
-                                // Check system UI insets to prevent touches in navigation / status zones
-                                val insets = ViewCompat.getRootWindowInsets(v)?.getInsets(WindowInsetsCompat.Type.systemBars())
-                                val topInset = insets?.top?.toFloat() ?: 0f
-                                val bottomInset = insets?.bottom?.toFloat() ?: 0f
-                                val leftInset = insets?.left?.toFloat() ?: 0f
-                                val rightInset = insets?.right?.toFloat() ?: 0f
-
-                                val isLand = v.width > v.height
                                 val vAspect = if (streamWidth > 0 && streamHeight > 0) streamWidth.toFloat() / streamHeight.toFloat() else 16f / 9f
                                 val cAspect = v.width.toFloat() / v.height.toFloat()
 
@@ -363,19 +371,11 @@ fun WardRemoteApp() {
                                     floatArrayOf(0f, padY, v.width.toFloat(), padY + actualH)
                                 }
 
-                                // If touch starts outside allowable region, yield to Android system
+                                // If touch starts outside active video display (pillarbox/letterbox margin),
+                                // yield to Android system gestures (e.g. system swipe back from bezel)
                                 if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                                    // Check system insets boundary (navigation bar / status bar)
-                                    if (event.y < topInset || event.y > v.height - bottomInset ||
-                                        event.x < leftInset || event.x > v.width - rightInset) {
+                                    if (event.x < videoLeft || event.x > videoRight || event.y < videoTop || event.y > videoBottom) {
                                         return@setOnTouchListener false
-                                    }
-
-                                    // In landscape mode, reject touches starting outside video pillarbox/letterbox
-                                    if (isLand) {
-                                        if (event.x < videoLeft || event.x > videoRight || event.y < videoTop || event.y > videoBottom) {
-                                            return@setOnTouchListener false
-                                        }
                                     }
                                 }
 
@@ -785,7 +785,7 @@ fun WardRemoteApp() {
                         exit = fadeOut(),
                         modifier = Modifier
                             .align(Alignment.TopCenter)
-                            .padding(top = 28.dp, start = 8.dp, end = 8.dp)
+                            .padding(top = 8.dp, start = 8.dp, end = 8.dp)
                             .fillMaxWidth()
                     ) {
                         Card(
@@ -935,7 +935,7 @@ fun WardRemoteApp() {
                         visible = isBarCollapsed,
                         enter = fadeIn(),
                         exit = fadeOut(),
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 24.dp)
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
                     ) {
                         Card(
                             onClick = {
@@ -1126,6 +1126,93 @@ fun WardRemoteApp() {
                                 val bitrateMbps = (sessionStats?.bitrateKbps ?: 0) / 1000f
                                 DiagnosticRow("Bitrate:", String.format("%.2f Mbps", bitrateMbps), Color.White)
                                 DiagnosticRow("Resolution:", "${streamWidth}x${streamHeight}", Color(0xFF94A3B8))
+
+                                HorizontalDivider(color = Color(0x3338BDF8), thickness = 1.dp)
+
+                                Text(
+                                    text = "🎛 STREAM QUALITY CONTROLS",
+                                    color = Color(0xFF38BDF8),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                // Resolution Switch
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Resolution:", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Button(
+                                            onClick = {
+                                                deviceStore.setPreferredResolution(1920, 1080)
+                                                WardSessionManager.requestStreamConfig(1920, 1080, targetFps)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (streamWidth >= 1920) Color(0xFF0284C7) else Color(0xFF1E293B)
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(28.dp),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text("1080p (Crisp)", fontSize = 10.sp, color = Color.White)
+                                        }
+                                        Button(
+                                            onClick = {
+                                                deviceStore.setPreferredResolution(1280, 720)
+                                                WardSessionManager.requestStreamConfig(1280, 720, targetFps)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (streamWidth < 1920) Color(0xFF0284C7) else Color(0xFF1E293B)
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(28.dp),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text("720p", fontSize = 10.sp, color = Color.White)
+                                        }
+                                    }
+                                }
+
+                                // Framerate Switch
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Target FPS:", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Button(
+                                            onClick = {
+                                                deviceStore.setPreferredFps(60)
+                                                WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 60)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (targetFps >= 60) Color(0xFF059669) else Color(0xFF1E293B)
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(28.dp),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text("60 FPS", fontSize = 10.sp, color = Color.White)
+                                        }
+                                        Button(
+                                            onClick = {
+                                                deviceStore.setPreferredFps(30)
+                                                WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 30)
+                                            },
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = if (targetFps < 60) Color(0xFF059669) else Color(0xFF1E293B)
+                                            ),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(28.dp),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text("30 FPS", fontSize = 10.sp, color = Color.White)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1404,6 +1491,69 @@ fun WardRemoteApp() {
                                             unfocusedTextColor = Color.White
                                         )
                                     )
+
+                                    HorizontalDivider(color = Color(0x3338BDF8), thickness = 1.dp)
+
+                                    Text(
+                                        text = "Stream Quality Preference",
+                                        color = Color(0xFF38BDF8),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Default Resolution:", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            FilterChip(
+                                                selected = selectedResWidth >= 1920,
+                                                onClick = {
+                                                    selectedResWidth = 1920
+                                                    selectedResHeight = 1080
+                                                    deviceStore.setPreferredResolution(1920, 1080)
+                                                },
+                                                label = { Text("1080p", fontSize = 11.sp) }
+                                            )
+                                            FilterChip(
+                                                selected = selectedResWidth < 1920,
+                                                onClick = {
+                                                    selectedResWidth = 1280
+                                                    selectedResHeight = 720
+                                                    deviceStore.setPreferredResolution(1280, 720)
+                                                },
+                                                label = { Text("720p", fontSize = 11.sp) }
+                                            )
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Default Framerate:", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            FilterChip(
+                                                selected = selectedFps >= 60,
+                                                onClick = {
+                                                    selectedFps = 60
+                                                    deviceStore.setPreferredFps(60)
+                                                },
+                                                label = { Text("60 FPS", fontSize = 11.sp) }
+                                            )
+                                            FilterChip(
+                                                selected = selectedFps < 60,
+                                                onClick = {
+                                                    selectedFps = 30
+                                                    deviceStore.setPreferredFps(30)
+                                                },
+                                                label = { Text("30 FPS", fontSize = 11.sp) }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

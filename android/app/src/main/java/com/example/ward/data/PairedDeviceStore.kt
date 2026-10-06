@@ -161,4 +161,20 @@ class PairedDeviceStore(context: Context) {
     fun clearPinnedCertSha256() {
         prefs.edit().remove(KEY_CERT_SHA256).apply()
     }
+
+    fun getPreferredResolution(): Pair<Int, Int> {
+        val w = prefs.getInt("pref_stream_width", 1920)
+        val h = prefs.getInt("pref_stream_height", 1080)
+        return Pair(w, h)
+    }
+
+    fun setPreferredResolution(width: Int, height: Int) {
+        prefs.edit().putInt("pref_stream_width", width).putInt("pref_stream_height", height).apply()
+    }
+
+    fun getPreferredFps(): Int = prefs.getInt("pref_stream_fps", 60)
+
+    fun setPreferredFps(fps: Int) {
+        prefs.edit().putInt("pref_stream_fps", fps).apply()
+    }
 }

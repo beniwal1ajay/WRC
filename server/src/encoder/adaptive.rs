@@ -180,6 +180,15 @@ impl AdaptiveVideoController {
         }
     }
 
+    /// Dynamically override target FPS upon client request.
+    pub fn set_target_fps(&mut self, fps: u32) {
+        let clamped = fps.clamp(15, 60);
+        self.max_fps = clamped;
+        self.current_fps = clamped;
+        self.update_frame_interval();
+        info!("AdaptiveVideo: Client set target FPS to {}", clamped);
+    }
+
     fn update_frame_interval(&mut self) {
         let fps = self.current_fps.max(1) as u64;
         self.frame_interval = Duration::from_micros(1_000_000 / fps);

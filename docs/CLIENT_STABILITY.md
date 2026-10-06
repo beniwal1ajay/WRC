@@ -132,30 +132,51 @@ We separated the UI layer from the networking and decoding layer:
 
 ---
 
-## 5. Landscape, Immersive Mode & Coordinate Boundaries
+---
 
-### Immersive Sticky Mode
-During active streaming, WARD engages immersive sticky mode via `WindowInsetsControllerCompat`:
-- Hides status bars and navigation bars (`WindowInsetsCompat.Type.systemBars()`).
-- Sets behavior to `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`.
-- Maximizes visible screen area.
+## 5. Landscape, Immersive Fullscreen Mode & Coordinate Boundaries
 
-### System UI Insets Protection
-When system bars are transiently swiped open (e.g., gesture navigation pill or 3-button bar):
-- `ViewCompat.getRootWindowInsets(v)` extracts the active insets.
-- Any touch event starting within the navigation or status bar bounds returns `false` and is yielded directly to Android OS.
-- Android system gestures never send spurious clicks or drag events to the remote PC.
+### Display Cutout & Immersive Sticky Architecture
+During active remote desktop streaming, WARD enforces edge-to-edge immersive sticky mode:
+- **Display Cutout Accommodation**: Configured with `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES` (`Build.VERSION_CODES.P`), allowing the viewport to extend past camera notches and cutouts without being artificially letterboxed or displaying the Android system status bar.
+- **Window Fullscreen Enforcement**: Applies `FLAG_FULLSCREEN` combined with `WindowInsetsControllerCompat.hide(WindowInsetsCompat.Type.systemBars())` and `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`.
+- **Legacy OEM Compatibility**: Enforces `SYSTEM_UI_FLAG_IMMERSIVE_STICKY`, `SYSTEM_UI_FLAG_FULLSCREEN`, `SYSTEM_UI_FLAG_HIDE_NAVIGATION`, `SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN`, and `SYSTEM_UI_FLAG_LAYOUT_STABLE` for ColorOS/OxygenOS/MIUI/OneUI devices where status bar icons would otherwise linger.
+- **Lifecycle Persistence**: Re-enforces immersive mode in `onWindowFocusChanged(hasFocus)` and `onResume()`, ensuring status and navigation bars do not reappear after notification pulls, app switching, or rotation.
+- **Session End Restoration**: When disconnecting, cleanly restores `WindowInsetsCompat.Type.systemBars()`, clears `FLAG_FULLSCREEN`, resets cutout mode to default, and brings back normal system UI.
 
-### Precise Display Bounds Mapping
-In landscape orientation, phone screens (typically 20:9 or 21:9) pillarbox standard 16:9 remote desktop streams.
-- `computeVideoBounds` calculates the exact rectangle occupied by the video surface (`[videoLeft, videoTop, videoRight, videoBottom]`).
-- Any touch starting in the black letterbox/pillarbox margins returns `false`.
-- Physical mouse events (`InputDevice.SOURCE_MOUSE`) are captured via `setOnGenericMotionListener` and mapped within valid display bounds.
+### Viewport Coordinate Mapping & System Gestures
+- The video surface is centered inside the display maintaining native 16:9 aspect ratio (`Modifier.fillMaxHeight().aspectRatio(16/9)` in landscape, `Modifier.fillMaxWidth().aspectRatio(16/9)` in portrait).
+- Exact display bounds `[videoLeft, videoTop, videoRight, videoBottom]` are computed dynamically.
+- Touches starting inside the active video bounds are 100% responsive without artificial inset dead zones.
+- Touches starting in the black pillarbox/letterbox margins return `false` to permit seamless Android system navigation gestures (such as edge back swipe).
+- Physical USB and Bluetooth mouse inputs (buttons, relative motion, hover, and scroll wheels) map directly to Ubuntu Mutter input events without scaling errors.
 
 ---
 
-## 6. Build & Deployment Verification
+## 6. Dynamic Resolution & Framerate Switching (1080p Full HD vs 720p / 60 FPS vs 30 FPS)
 
-- **Server Release**: Built with `cargo build --release`, installed to `~/.local/bin/ward-server`, running under `ward-host.service`.
-- **Android APK**: Compiled with Gradle (`./gradlew assembleDebug`), verified clean, stored at:
+### Root Cause of Blurry Text
+Previously, WARD defaulted to 1280x720 downscaling to conserve CPU on mobile devices, which blurred small fonts and desktop UI elements. Furthermore, no client controls existed to select resolution or framerate.
+
+### Implementation Details
+1. **Default 1080p (Native Full HD)**:
+   - Server now defaults to `(1920, 1080)` @ 60 FPS for LAN and VPN connections. Small text in terminals, IDEs, and browser windows is razor-sharp.
+2. **Bidirectional `VideoConfig` Protocol**:
+   - Client can send `WardMessage.VideoConfig(width, height, codec, fpsTarget)` to request resolution or framerate changes at any time.
+   - Server session reader routes `VideoConfig` to an asynchronous reconfiguration channel.
+   - The session main loop recreates OpenH264 encoder with the requested target resolution, updates `AdaptiveVideoController.set_target_fps(fps)`, forces an IDR keyframe, and confirms the new configuration back to the client.
+   - Client `VideoDecoder` handles the format transition seamlessly on the existing output surface.
+3. **Client UI Controls**:
+   - **Active Session HUD**: The Diagnostics Card includes live one-tap toggles for:
+     - Resolution: `1080p (Crisp)` vs `720p`
+     - Framerate: `60 FPS (Smooth)` vs `30 FPS (Battery Saver)`
+   - **Developer Options**: The Disconnected screen provides persistent preference chips stored in `PairedDeviceStore` (`SharedPreferences`), automatically requesting the user's preferred settings on every connection.
+
+---
+
+## 7. Build & Deployment Verification
+
+- **Server Release**: Built with `cargo build --release`, verified with all 43 unit and integration tests passing, running live under `ward-host.service`.
+- **Android APK**: Compiled with Gradle (`./gradlew assembleDebug`), verified clean, stored as the sole APK at:
   [`android/app/build/outputs/apk/debug/ward-v1.1.apk`](file:///home/ajay/Desktop/WRC/ward/android/app/build/outputs/apk/debug/ward-v1.1.apk).
+

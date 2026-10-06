@@ -207,16 +207,16 @@ pub async fn run_session(
     };
     let mut rate_controller = crate::encoder::adaptive::AdaptiveVideoController::new(initial_tier);
 
-    // Check if 720p Performance profile is requested (via WARD_STREAM_RES env or default)
-    // 720p Performance reduces pixel count by 56% for smooth 60 FPS on 15W mobile CPUs
-    let is_native = matches!(
+    // Default to Native 1080p (1920x1080) for sharp, clear desktop text rendering.
+    // 720p can be requested via client VideoConfig message or WARD_STREAM_RES=720p
+    let is_720p = matches!(
         std::env::var("WARD_STREAM_RES").as_deref(),
-        Ok("1080p") | Ok("native")
+        Ok("720p")
     );
-    let (stream_w, stream_h) = if is_native {
-        (1920, 1080)
-    } else {
+    let (stream_w, stream_h) = if is_720p {
         (1280, 720)
+    } else {
+        (1920, 1080)
     };
 
     let mut encoder = VideoEncoder::new(EncoderSettings {
@@ -240,13 +240,14 @@ pub async fn run_session(
     info!(
         "Video stream configured: {}x{} @ {}fps (H.264, profile: {}, initial bitrate {} kbps)",
         encoder.width(), encoder.height(), rate_controller.current_fps,
-        if is_native { "Native 1080p" } else { "Performance 720p (60 FPS)" },
+        if is_720p { "Performance 720p" } else { "Native 1080p (Full HD)" },
         rate_controller.current_bitrate_bps / 1000
     );
 
     // Channel for client input events -> input dispatcher
     let (input_tx, mut input_rx) = mpsc::channel::<Message>(512);
     let (telemetry_tx, mut telemetry_rx) = mpsc::channel::<(u16, u16)>(64);
+    let (reconfig_tx, mut reconfig_rx) = mpsc::channel::<(u16, u16, u16)>(16);
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
     let outbound_tx_reader = outbound_tx.clone();
     let keyframe_requested = Arc::new(AtomicBool::new(true)); // force keyframe on start
@@ -261,6 +262,10 @@ pub async fn run_session(
                     Message::KeyframeRequest => {
                         debug!("Client requested keyframe");
                         kf_req_clone.store(true, Ordering::Relaxed);
+                    }
+                    Message::VideoConfig { width, height, fps_target, .. } => {
+                        info!("Client requested video stream change: {}x{} @ {}fps", width, height, fps_target);
+                        let _ = reconfig_tx.try_send((width, height, fps_target));
                     }
                     Message::Ping { timestamp_ns } => {
                         let pong = Message::Pong { timestamp_ns };
@@ -419,6 +424,45 @@ pub async fn run_session(
                     }
                     None => {
                         // Channel closed
+                    }
+                }
+            }
+
+            reconfig_opt = reconfig_rx.recv() => {
+                if let Some((target_w, target_h, target_fps)) = reconfig_opt {
+                    let w = if target_w > 0 { target_w as usize } else { encoder.width() };
+                    let h = if target_h > 0 { target_h as usize } else { encoder.height() };
+                    let fps = if target_fps > 0 { target_fps as u32 } else { rate_controller.current_fps };
+
+                    info!("Reconfiguring video stream to {}x{} @ {} FPS upon client request", w, h, fps);
+                    rate_controller.set_target_fps(fps);
+
+                    let new_settings = EncoderSettings {
+                        width: w,
+                        height: h,
+                        bitrate_bps: rate_controller.current_bitrate_bps,
+                        max_fps: fps as f32,
+                    };
+                    match VideoEncoder::new(new_settings) {
+                        Ok(new_enc) => {
+                            encoder = new_enc;
+                            encoder.force_keyframe();
+
+                            // Send updated VideoConfig confirmation back to client
+                            let conf = Message::VideoConfig {
+                                width: w as u16,
+                                height: h as u16,
+                                codec: 1,
+                                fps_target: fps as u16,
+                            };
+                            let seq = sequence.fetch_add(1, Ordering::Relaxed);
+                            if let Err(e) = protocol::write_message(&mut writer, &conf, seq).await {
+                                warn!("Failed to send reconfigured VideoConfig to client: {:#}", e);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to reconfigure video encoder to {}x{}: {:#}", w, h, e);
+                        }
                     }
                 }
             }

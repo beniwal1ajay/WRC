@@ -30,11 +30,14 @@ object WardSessionManager {
     private val _fps = MutableStateFlow(0)
     val fps: StateFlow<Int> = _fps.asStateFlow()
 
-    private val _streamWidth = MutableStateFlow(1280)
+    private val _streamWidth = MutableStateFlow(1920)
     val streamWidth: StateFlow<Int> = _streamWidth.asStateFlow()
 
-    private val _streamHeight = MutableStateFlow(720)
+    private val _streamHeight = MutableStateFlow(1080)
     val streamHeight: StateFlow<Int> = _streamHeight.asStateFlow()
+
+    private val _targetFps = MutableStateFlow(60)
+    val targetFps: StateFlow<Int> = _targetFps.asStateFlow()
 
     private val _sessionStats = MutableStateFlow<SessionStats?>(null)
     val sessionStats: StateFlow<SessionStats?> = _sessionStats.asStateFlow()
@@ -90,9 +93,10 @@ object WardSessionManager {
                     WardRemoteSessionService.stop(context.applicationContext)
                 }
             },
-            onVideoConfig = { width, height, _ ->
+            onVideoConfig = { width, height, fps ->
                 _streamWidth.value = width
                 _streamHeight.value = height
+                if (fps > 0) _targetFps.value = fps
                 videoDecoder?.start(width, height)
             },
             onVideoFrame = { data, timestampNs, isKeyframe ->
@@ -153,5 +157,13 @@ object WardSessionManager {
 
     fun requestKeyframe() {
         wardClient?.requestKeyframe()
+    }
+
+    fun requestStreamConfig(width: Int, height: Int, fps: Int) {
+        _streamWidth.value = width
+        _streamHeight.value = height
+        _targetFps.value = fps
+        wardClient?.sendInput(WardMessage.VideoConfig(width, height, 1, fps.toShort()))
+        Log.i(TAG, "Requested stream configuration: ${width}x${height} @ ${fps} FPS")
     }
 }
