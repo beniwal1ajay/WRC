@@ -83,6 +83,7 @@ pub struct VideoEncoder {
     width: usize,
     height: usize,
     yuv_buffer: Vec<u8>,
+    last_reconfig: std::time::Instant,
 }
 
 impl VideoEncoder {
@@ -123,21 +124,29 @@ impl VideoEncoder {
             width,
             height,
             yuv_buffer,
+            last_reconfig: std::time::Instant::now(),
         })
     }
 
     /// Dynamically update target bitrate according to real-time network conditions.
+    /// Only reconfigures OpenH264 on significant sustained congestion drops (> 35% reduction)
+    /// with a 5-second cooldown to preserve predictive P-frames and prevent IDR keyframe thrashing.
     pub fn set_bitrate(&mut self, bitrate_bps: u32) {
-        if (self.settings.bitrate_bps as i32 - bitrate_bps as i32).abs() < 150_000 {
-            return;
-        }
-        self.settings.bitrate_bps = bitrate_bps;
-        let config = Self::build_config(&self.settings);
-        let api = OpenH264API::from_source();
-        if let Ok(new_enc) = Encoder::with_api_config(api, config) {
-            self.encoder = new_enc;
-            self.encoder.force_intra_frame();
-            info!("OpenH264 bitrate dynamically adjusted to {} kbps", bitrate_bps / 1000);
+        let current_bps = self.settings.bitrate_bps;
+        let is_major_drop = (bitrate_bps as f32) < (current_bps as f32 * 0.65);
+        let is_major_jump = (bitrate_bps as f32) > (current_bps as f32 * 1.50);
+        let cooldown_passed = self.last_reconfig.elapsed().as_secs() >= 5;
+
+        if (is_major_drop || is_major_jump) && cooldown_passed {
+            self.settings.bitrate_bps = bitrate_bps;
+            self.last_reconfig = std::time::Instant::now();
+            let config = Self::build_config(&self.settings);
+            let api = OpenH264API::from_source();
+            if let Ok(new_enc) = Encoder::with_api_config(api, config) {
+                self.encoder = new_enc;
+                self.encoder.force_intra_frame();
+                info!("OpenH264 bitrate reconfigured to {} kbps (cooldown elapsed)", bitrate_bps / 1000);
+            }
         }
     }
 
@@ -147,7 +156,7 @@ impl VideoEncoder {
         self.encoder.force_intra_frame();
     }
 
-    /// Encode a raw BGRx/BGRA frame into H.264 NAL units.
+    /// Encode a raw BGRx/BGRA frame into H.264 NAL units (supporting scaled resolutions).
     pub fn encode_bgrx(
         &mut self,
         bgrx_data: &[u8],
@@ -156,29 +165,22 @@ impl VideoEncoder {
         stride: usize,
         timestamp_ns: u64,
     ) -> Result<EncodedPacket> {
-        // Adjust encoder dimensions if screen resolution changed
-        if src_width != self.width || src_height != self.height {
-            let mut new_w = src_width;
-            let mut new_h = src_height;
-            if new_w % 2 != 0 { new_w -= 1; }
-            if new_h % 2 != 0 { new_h -= 1; }
-            self.width = new_w;
-            self.height = new_h;
-            self.yuv_buffer.resize((3 * new_w * new_h) / 2, 0);
-            info!("Encoder resized to {}x{}", new_w, new_h);
-        }
+        let dst_width = self.width;
+        let dst_height = self.height;
 
-        // Convert BGRx to I420 YUV
-        bgrx_to_yuv420p(
+        // Convert BGRx to I420 YUV (fast LUT scaled if src != dst, or 1:1)
+        bgrx_to_yuv420p_scaled(
             bgrx_data,
-            self.width,
-            self.height,
+            src_width,
+            src_height,
             stride,
+            dst_width,
+            dst_height,
             &mut self.yuv_buffer,
         );
 
-        let y_len = self.width * self.height;
-        let uv_len = (self.width / 2) * (self.height / 2);
+        let y_len = dst_width * dst_height;
+        let uv_len = (dst_width / 2) * (dst_height / 2);
         let (y_plane, rest) = self.yuv_buffer.split_at(y_len);
         let (u_plane, v_plane) = rest.split_at(uv_len);
 
@@ -186,8 +188,8 @@ impl VideoEncoder {
             y: y_plane,
             u: u_plane,
             v: v_plane,
-            width: self.width,
-            height: self.height,
+            width: dst_width,
+            height: dst_height,
         };
 
         let bitstream = self.encoder.encode(&yuv_source)
@@ -212,6 +214,92 @@ impl VideoEncoder {
 
     pub fn height(&self) -> usize {
         self.height
+    }
+}
+
+/// Convert BGRx/BGRA pixels (4 bytes per pixel) into I420 YUV planar format (ITU-R BT.601),
+/// with fast downscaling if source and destination dimensions differ.
+pub fn bgrx_to_yuv420p_scaled(
+    bgrx: &[u8],
+    src_width: usize,
+    src_height: usize,
+    stride: usize,
+    dst_width: usize,
+    dst_height: usize,
+    yuv: &mut [u8],
+) {
+    if dst_width == src_width && dst_height == src_height {
+        bgrx_to_yuv420p(bgrx, src_width, src_height, stride, yuv);
+        return;
+    }
+
+    let y_plane_size = dst_width * dst_height;
+    let uv_plane_size = (dst_width / 2) * (dst_height / 2);
+    let (y_plane, rest) = yuv.split_at_mut(y_plane_size);
+    let (u_plane, v_plane) = rest.split_at_mut(uv_plane_size);
+
+    let half_dst_w = dst_width / 2;
+    let half_dst_h = dst_height / 2;
+
+    for y_pair in 0..half_dst_h {
+        let dy0 = y_pair * 2;
+        let dy1 = dy0 + 1;
+
+        let sy0 = (dy0 * src_height) / dst_height;
+        let sy1 = (dy1 * src_height) / dst_height;
+
+        let row0_offset = sy0 * stride;
+        let row1_offset = sy1 * stride;
+
+        let y0_dst_offset = dy0 * dst_width;
+        let y1_dst_offset = dy1 * dst_width;
+        let uv_dst_offset = y_pair * half_dst_w;
+
+        for x_pair in 0..half_dst_w {
+            let dx0 = x_pair * 2;
+            let dx1 = dx0 + 1;
+
+            let sx0 = (dx0 * src_width) / dst_width;
+            let sx1 = (dx1 * src_width) / dst_width;
+
+            let p0 = row0_offset + sx0 * 4;
+            let p1 = row0_offset + sx1 * 4;
+            let p2 = row1_offset + sx0 * 4;
+            let p3 = row1_offset + sx1 * 4;
+
+            if p3 + 2 >= bgrx.len() {
+                continue;
+            }
+
+            let b0 = bgrx[p0] as i32;
+            let g0 = bgrx[p0 + 1] as i32;
+            let r0 = bgrx[p0 + 2] as i32;
+
+            let b1 = bgrx[p1] as i32;
+            let g1 = bgrx[p1 + 1] as i32;
+            let r1 = bgrx[p1 + 2] as i32;
+
+            let b2 = bgrx[p2] as i32;
+            let g2 = bgrx[p2 + 1] as i32;
+            let r2 = bgrx[p2 + 2] as i32;
+
+            let b3 = bgrx[p3] as i32;
+            let g3 = bgrx[p3 + 1] as i32;
+            let r3 = bgrx[p3 + 2] as i32;
+
+            y_plane[y0_dst_offset + dx0] = (((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16).clamp(16, 235) as u8;
+            y_plane[y0_dst_offset + dx1] = (((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16).clamp(16, 235) as u8;
+            y_plane[y1_dst_offset + dx0] = (((66 * r2 + 129 * g2 + 25 * b2 + 128) >> 8) + 16).clamp(16, 235) as u8;
+            y_plane[y1_dst_offset + dx1] = (((66 * r3 + 129 * g3 + 25 * b3 + 128) >> 8) + 16).clamp(16, 235) as u8;
+
+            let r_avg = (r0 + r1 + r2 + r3 + 2) >> 2;
+            let g_avg = (g0 + g1 + g2 + g3 + 2) >> 2;
+            let b_avg = (b0 + b1 + b2 + b3 + 2) >> 2;
+
+            let uv_idx = uv_dst_offset + x_pair;
+            u_plane[uv_idx] = (((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
+            v_plane[uv_idx] = (((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128).clamp(16, 240) as u8;
+        }
     }
 }
 
@@ -353,5 +441,30 @@ mod tests {
         let packet3 = encoder.encode_bgrx(&bgrx, 128, 128, stride, 66_666_666)
             .expect("Forced keyframe encode failed");
         assert!(packet3.is_keyframe, "Third frame should be forced keyframe");
+    }
+
+    #[test]
+    fn test_bgrx_to_yuv420p_scaled() {
+        let src_w = 192;
+        let src_h = 108;
+        let dst_w = 128;
+        let dst_h = 72;
+        let stride = src_w * 4;
+        let mut bgrx = vec![0u8; src_h * stride];
+
+        // Fill with green color: B=0, G=255, R=0
+        for y in 0..src_h {
+            for x in 0..src_w {
+                let idx = y * stride + x * 4;
+                bgrx[idx + 1] = 255;
+            }
+        }
+
+        let mut yuv = vec![0u8; (3 * dst_w * dst_h) / 2];
+        bgrx_to_yuv420p_scaled(&bgrx, src_w, src_h, stride, dst_w, dst_h, &mut yuv);
+
+        assert_eq!(yuv.len(), (3 * dst_w * dst_h) / 2);
+        // Green Y in BT.601 is approx 145
+        assert!(yuv[0] >= 140 && yuv[0] <= 150, "Y value: {}", yuv[0]);
     }
 }

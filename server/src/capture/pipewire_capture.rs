@@ -144,23 +144,15 @@ fn pipewire_capture_loop(
 
     let listener_builder = stream
         .add_local_listener_with_user_data(())
+        .state_changed(move |_stream, _user_data, old, new| {
+            debug!("PipeWire stream state changed: {:?} -> {:?}", old, new);
+        })
         .param_changed(move |_stream, _user_data, param_id, param| {
-            if param.is_none() {
-                return;
+            if let Some(param) = param {
+                if param_id == pipewire::spa::param::ParamType::Format.as_raw() {
+                    info!("PipeWire video format negotiated (pod size: {} bytes)", param.size());
+                }
             }
-            // The format param tells us the negotiated video format.
-            // We'll parse width/height from it using the raw SPA pod.
-            let param = param.unwrap();
-            debug!("Stream param changed: id={}, pod_type={:?}, size={}",
-                param_id, param.type_(), param.size());
-
-            // Try to extract format info from the pod using SPA format parsing.
-            // The pod is an Object of type SPA_TYPE_OBJECT_Format.
-            // We need to iterate its properties to find size.
-            //
-            // For now, we'll get the actual dimensions from the buffer chunk stride
-            // and data length when the first frame arrives. This is more reliable
-            // than parsing the SPA pod manually.
         });
 
     let mut spare_buffer: Option<Vec<u8>> = None;
@@ -306,6 +298,28 @@ fn pipewire_capture_loop(
                                 spa::utils::Id(spa::param::video::VideoFormat::RGBx.as_raw()),
                                 spa::utils::Id(spa::param::video::VideoFormat::RGBA.as_raw()),
                             ],
+                        },
+                    ))),
+                ),
+                spa::pod::Property::new(
+                    spa::param::format::FormatProperties::VideoFramerate.as_raw(),
+                    spa::pod::Value::Choice(spa::pod::ChoiceValue::Fraction(spa::utils::Choice(
+                        spa::utils::ChoiceFlags::empty(),
+                        spa::utils::ChoiceEnum::Range {
+                            default: spa::utils::Fraction { num: 60, denom: 1 },
+                            min: spa::utils::Fraction { num: 0, denom: 1 },
+                            max: spa::utils::Fraction { num: 60, denom: 1 },
+                        },
+                    ))),
+                ),
+                spa::pod::Property::new(
+                    spa::param::format::FormatProperties::VideoMaxFramerate.as_raw(),
+                    spa::pod::Value::Choice(spa::pod::ChoiceValue::Fraction(spa::utils::Choice(
+                        spa::utils::ChoiceFlags::empty(),
+                        spa::utils::ChoiceEnum::Range {
+                            default: spa::utils::Fraction { num: 60, denom: 1 },
+                            min: spa::utils::Fraction { num: 0, denom: 1 },
+                            max: spa::utils::Fraction { num: 60, denom: 1 },
                         },
                     ))),
                 ),

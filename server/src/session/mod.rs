@@ -198,22 +198,51 @@ pub async fn run_session(
     protocol::write_message(&mut writer, &accepted, seq).await
         .context("Failed to send SessionAccepted")?;
 
-    // 3. Initialize H.264 Encoder
-    let mut encoder = VideoEncoder::new(EncoderSettings::default())
-        .context("Failed to initialize video encoder")?;
+    // 3. Initialize Adaptive Rate Controller and H.264 Encoder
+    let initial_tier = match transport_type {
+        crate::transport::TransportType::Lan => crate::transport::selector::ConnectionTier::LanDirect,
+        crate::transport::TransportType::Vpn => crate::transport::selector::ConnectionTier::VpnDirect,
+        crate::transport::TransportType::DirectP2p => crate::transport::selector::ConnectionTier::P2pIce,
+        crate::transport::TransportType::Relay => crate::transport::selector::ConnectionTier::TurnRelay,
+    };
+    let mut rate_controller = crate::encoder::adaptive::AdaptiveVideoController::new(initial_tier);
 
-    // Send initial VIDEO_CONFIG
+    // Check if 720p Performance profile is requested (via WARD_STREAM_RES env or default)
+    // 720p Performance reduces pixel count by 56% for smooth 60 FPS on 15W mobile CPUs
+    let is_native = matches!(
+        std::env::var("WARD_STREAM_RES").as_deref(),
+        Ok("1080p") | Ok("native")
+    );
+    let (stream_w, stream_h) = if is_native {
+        (1920, 1080)
+    } else {
+        (1280, 720)
+    };
+
+    let mut encoder = VideoEncoder::new(EncoderSettings {
+        width: stream_w,
+        height: stream_h,
+        bitrate_bps: rate_controller.current_bitrate_bps,
+        max_fps: rate_controller.current_fps as f32,
+    }).context("Failed to initialize video encoder")?;
+
+    // Send initial VIDEO_CONFIG to client
     let video_config = Message::VideoConfig {
         width: encoder.width() as u16,
         height: encoder.height() as u16,
         codec: 1, // H.264
-        fps_target: 60,
+        fps_target: rate_controller.current_fps as u16,
     };
     let seq = sequence.fetch_add(1, Ordering::Relaxed);
     protocol::write_message(&mut writer, &video_config, seq).await
         .context("Failed to send VideoConfig")?;
 
-    info!("Video stream configured: {}x{} @ 60fps (H.264)", encoder.width(), encoder.height());
+    info!(
+        "Video stream configured: {}x{} @ {}fps (H.264, profile: {}, initial bitrate {} kbps)",
+        encoder.width(), encoder.height(), rate_controller.current_fps,
+        if is_native { "Native 1080p" } else { "Performance 720p (60 FPS)" },
+        rate_controller.current_bitrate_bps / 1000
+    );
 
     // Channel for client input events -> input dispatcher
     let (input_tx, mut input_rx) = mpsc::channel::<Message>(512);
@@ -367,17 +396,13 @@ pub async fn run_session(
     });
 
     // 4. Video Streaming Loop: pipe captured frames -> encoder -> transport writer
-    let initial_tier = match transport_type {
-        crate::transport::TransportType::Lan => crate::transport::selector::ConnectionTier::LanDirect,
-        crate::transport::TransportType::Vpn => crate::transport::selector::ConnectionTier::VpnDirect,
-        crate::transport::TransportType::DirectP2p => crate::transport::selector::ConnectionTier::P2pIce,
-        crate::transport::TransportType::Relay => crate::transport::selector::ConnectionTier::TurnRelay,
-    };
-    let mut rate_controller = crate::encoder::adaptive::AdaptiveVideoController::new(initial_tier);
-
-    info!("Streaming video to client via {} (adaptive profile: {} fps, target {} kbps)...",
-        transport_type, rate_controller.current_fps, rate_controller.current_bitrate_bps / 1000);
     let mut frames_sent: u64 = 0;
+    let mut perf_last_report = std::time::Instant::now();
+    let mut perf_frames_count: u32 = 0;
+    let mut perf_capture_wait_us: u64 = 0;
+    let mut perf_encode_us: u64 = 0;
+    let mut perf_write_us: u64 = 0;
+    let mut last_frame_instant = std::time::Instant::now();
 
     while running.load(Ordering::Relaxed) {
         tokio::select! {
@@ -413,6 +438,10 @@ pub async fn run_session(
             frame_opt = frame_rx.recv() => {
                 match frame_opt {
                     Some(frame) => {
+                        let wait_dur = last_frame_instant.elapsed();
+                        perf_capture_wait_us += wait_dur.as_micros() as u64;
+                        last_frame_instant = std::time::Instant::now();
+
                         let is_keyframe_req = keyframe_requested.swap(false, Ordering::Relaxed);
                         if is_keyframe_req {
                             encoder.force_keyframe();
@@ -427,13 +456,17 @@ pub async fn run_session(
                             .unwrap_or_default()
                             .as_nanos() as u64;
 
-                        match encoder.encode_bgrx(
+                        let t_enc = std::time::Instant::now();
+                        let enc_res = encoder.encode_bgrx(
                             &frame.data,
                             frame.width as usize,
                             frame.height as usize,
                             frame.stride as usize,
                             now_ns,
-                        ) {
+                        );
+                        perf_encode_us += t_enc.elapsed().as_micros() as u64;
+
+                        match enc_res {
                             Ok(packet) => {
                                 let msg = if packet.is_keyframe {
                                     Message::VideoKeyframe {
@@ -448,14 +481,34 @@ pub async fn run_session(
                                 };
 
                                 let seq = sequence.fetch_add(1, Ordering::Relaxed);
-                                if let Err(e) = protocol::write_message(&mut writer, &msg, seq).await {
+                                let t_write = std::time::Instant::now();
+                                let write_res = protocol::write_message(&mut writer, &msg, seq).await;
+                                perf_write_us += t_write.elapsed().as_micros() as u64;
+
+                                if let Err(e) = write_res {
                                     warn!("Failed to send video frame to client: {:#}", e);
                                     break;
                                 }
 
                                 frames_sent += 1;
-                                if frames_sent % 60 == 0 {
-                                    debug!("Streamed {} frames to client", frames_sent);
+                                perf_frames_count += 1;
+
+                                if perf_last_report.elapsed().as_secs() >= 5 && perf_frames_count > 0 {
+                                    let elapsed = perf_last_report.elapsed().as_secs_f64();
+                                    let fps = perf_frames_count as f64 / elapsed;
+                                    let avg_capture = perf_capture_wait_us as f64 / (perf_frames_count as f64 * 1000.0);
+                                    let avg_encode = perf_encode_us as f64 / (perf_frames_count as f64 * 1000.0);
+                                    let avg_write = perf_write_us as f64 / (perf_frames_count as f64 * 1000.0);
+                                    info!(
+                                        "[PERF METRICS] Video: {:.1} FPS | Latency: capture_wait={:.2}ms, encode={:.2}ms, tcp_write={:.2}ms | CPU Max: {:.0} FPS",
+                                        fps, avg_capture, avg_encode, avg_write,
+                                        if avg_encode > 0.0 { 1000.0 / avg_encode } else { 999.0 }
+                                    );
+                                    perf_last_report = std::time::Instant::now();
+                                    perf_frames_count = 0;
+                                    perf_capture_wait_us = 0;
+                                    perf_encode_us = 0;
+                                    perf_write_us = 0;
                                 }
                             }
                             Err(e) => {
