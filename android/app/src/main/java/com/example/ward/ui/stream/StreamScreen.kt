@@ -217,11 +217,6 @@ fun WardRemoteApp() {
         }
     }
 
-    if (connectionState is ConnectionState.Connected) {
-        SideEffect {
-            activity?.setImmersiveMode(true)
-        }
-    }
 
     // Apply preferred stream resolution and framerate immediately when connection is established
     LaunchedEffect(connectionState) {
@@ -877,7 +872,7 @@ fun WardRemoteApp() {
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
-                                            text = "v1.2 • " + (sessionStats?.connectionType?.displayName ?: "LAN"),
+                                            text = "v1.2.1 • " + (sessionStats?.connectionType?.displayName ?: "LAN"),
                                             color = Color.White,
                                             fontSize = 9.sp,
                                             fontWeight = FontWeight.Bold,

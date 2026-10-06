@@ -34,28 +34,39 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         currentInstance = this
 
-        // Allow drawing edge-to-edge behind system bars and into display cutouts
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val lp = window.attributes
-            lp.layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            window.attributes = lp
+        try {
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val lp = window.attributes
+                lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                window.attributes = lp
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "Cutout setup error: ${e.message}")
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            try {
+                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            } catch (e: Throwable) {
+                android.util.Log.w("MainActivity", "Permission error: ${e.message}")
+            }
         }
 
-        @Suppress("DEPRECATION")
-        window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
-            if (isImmersiveRequested && (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
-                window.decorView.postDelayed({
-                    if (isImmersiveRequested) {
-                        applyImmersiveMode(true)
-                    }
-                }, 300)
+        try {
+            @Suppress("DEPRECATION")
+            window.decorView.setOnSystemUiVisibilityChangeListener { visibility ->
+                if (isImmersiveRequested && (visibility and View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    window.decorView.postDelayed({
+                        if (isImmersiveRequested) {
+                            applyImmersiveMode(true)
+                        }
+                    }, 300)
+                }
             }
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "VisibilityListener error: ${e.message}")
         }
 
         setContent {
@@ -95,69 +106,51 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyImmersiveMode(enable: Boolean) {
-        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-        if (enable) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val lp = window.attributes
-                lp.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-                window.attributes = lp
-            }
-            window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN)
-            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
-
-            windowInsetsController.systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
-            windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
-            windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                window.insetsController?.let { controller ->
-                    controller.systemBarsBehavior =
-                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    controller.hide(
-                        android.view.WindowInsets.Type.statusBars()
-                        or android.view.WindowInsets.Type.navigationBars()
-                        or android.view.WindowInsets.Type.systemBars()
-                    )
+        try {
+            val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+            if (enable) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val lp = window.attributes
+                    lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    window.attributes = lp
                 }
-            }
+                window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN)
+                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
 
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                or View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            )
-        } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val lp = window.attributes
-                lp.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-                window.attributes = lp
-            }
-            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+                windowInsetsController.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+                windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
+                windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
 
-            windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
-            windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
-            windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                window.insetsController?.let { controller ->
-                    controller.show(
-                        android.view.WindowInsets.Type.statusBars()
-                        or android.view.WindowInsets.Type.navigationBars()
-                        or android.view.WindowInsets.Type.systemBars()
-                    )
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                )
+            } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val lp = window.attributes
+                    lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                    window.attributes = lp
                 }
-            }
+                window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
 
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+                windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+                windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
+                windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
+
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "applyImmersiveMode error: ${e.message}")
         }
     }
 

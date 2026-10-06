@@ -109,7 +109,7 @@ class WardProtocolTest {
             fpsTarget = 60
         )
         val bytes = config.serialize()
-        assertEquals(6, bytes.size)
+        assertEquals(8, bytes.size)
 
         val parsed = WardMessage.VideoConfig.parse(bytes)
         assertEquals(1920, parsed.width)
