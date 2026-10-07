@@ -391,28 +391,6 @@ fun WardRemoteApp() {
                             setOnTouchListener { v, event ->
                                 pointerCount = event.pointerCount
 
-                                val vAspect = if (streamWidth > 0 && streamHeight > 0) streamWidth.toFloat() / streamHeight.toFloat() else 16f / 9f
-                                val cAspect = v.width.toFloat() / v.height.toFloat()
-
-                                // Calculate exact display rendering bounds (pillarbox / letterbox)
-                                val (videoLeft, videoTop, videoRight, videoBottom) = if (cAspect > vAspect) {
-                                    val actualW = v.height.toFloat() * vAspect
-                                    val padX = (v.width.toFloat() - actualW) / 2f
-                                    floatArrayOf(padX, 0f, padX + actualW, v.height.toFloat())
-                                } else {
-                                    val actualH = v.width.toFloat() / vAspect
-                                    val padY = (v.height.toFloat() - actualH) / 2f
-                                    floatArrayOf(0f, padY, v.width.toFloat(), padY + actualH)
-                                }
-
-                                // If touch starts outside active video display (pillarbox/letterbox margin),
-                                // yield to Android system gestures (e.g. system swipe back from bezel)
-                                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
-                                    if (event.x < videoLeft || event.x > videoRight || event.y < videoTop || event.y > videoBottom) {
-                                        return@setOnTouchListener false
-                                    }
-                                }
-
                                 // Physical mouse button events
                                 if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
                                     when (event.actionMasked) {
