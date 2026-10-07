@@ -23,9 +23,13 @@ if [ ! -f "${APK_PATH}" ]; then
     exit 1
 fi
 
+VERSIONED_APK="${ANDROID_DIR}/app/build/outputs/apk/debug/ward-v1.2.3.apk"
+cp "${APK_PATH}" "${VERSIONED_APK}"
+
 echo ""
 echo "✅ Build successful!"
 echo "   APK Location: ${APK_PATH}"
+echo "   Versioned:    ${VERSIONED_APK}"
 echo "   APK Size:     $(du -h "${APK_PATH}" | cut -f1)"
 echo ""
 

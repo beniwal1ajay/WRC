@@ -213,11 +213,12 @@ pub async fn run_session(
         std::env::var("WARD_STREAM_RES").as_deref(),
         Ok("720p")
     );
-    let (stream_w, stream_h) = if is_720p {
-        (1280, 720)
+    let (stream_w, stream_h, initial_bitrate) = if is_720p {
+        (1280, 720, 8_000_000)
     } else {
-        (1920, 1080)
+        (1920, 1080, 12_000_000)
     };
+    rate_controller.current_bitrate_bps = initial_bitrate;
 
     let mut encoder = VideoEncoder::new(EncoderSettings {
         width: stream_w,
@@ -436,6 +437,11 @@ pub async fn run_session(
 
                     info!("Reconfiguring video stream to {}x{} @ {} FPS upon client request", w, h, fps);
                     rate_controller.set_target_fps(fps);
+                    if w >= 1920 {
+                        rate_controller.current_bitrate_bps = std::cmp::max(rate_controller.current_bitrate_bps, 12_000_000);
+                    } else if w <= 1280 {
+                        rate_controller.current_bitrate_bps = std::cmp::min(rate_controller.current_bitrate_bps, 8_000_000);
+                    }
 
                     let new_settings = EncoderSettings {
                         width: w,

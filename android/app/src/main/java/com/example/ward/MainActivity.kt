@@ -71,6 +71,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        try {
+            com.example.ward.service.WardSessionManager.disconnect(this)
+        } catch (_: Throwable) {}
         super.onDestroy()
         if (currentInstance == this) {
             currentInstance = null
@@ -101,9 +104,36 @@ class MainActivity : ComponentActivity() {
                         window.attributes = lp
                     }
                 }
+                window.clearFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN)
+                window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+
                 windowInsetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+                windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
+                windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.insetsController?.let { controller ->
+                        controller.systemBarsBehavior =
+                            android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        controller.hide(
+                            android.view.WindowInsets.Type.statusBars()
+                            or android.view.WindowInsets.Type.navigationBars()
+                            or android.view.WindowInsets.Type.systemBars()
+                        )
+                    }
+                }
+
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                )
             } else {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val lp = window.attributes
@@ -113,7 +143,22 @@ class MainActivity : ComponentActivity() {
                         window.attributes = lp
                     }
                 }
+                window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+
                 windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+                windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
+                windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.insetsController?.show(
+                        android.view.WindowInsets.Type.statusBars()
+                        or android.view.WindowInsets.Type.navigationBars()
+                        or android.view.WindowInsets.Type.systemBars()
+                    )
+                }
+
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
             }
         } catch (e: Throwable) {
             android.util.Log.w("MainActivity", "applyImmersiveMode error: ${e.message}")

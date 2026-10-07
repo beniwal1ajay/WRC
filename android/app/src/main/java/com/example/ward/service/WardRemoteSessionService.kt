@@ -109,7 +109,21 @@ class WardRemoteSessionService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.i(TAG, "WardRemoteSessionService task removed by user, closing session cleanly")
+        try {
+            WardSessionManager.disconnect(this)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error disconnecting on task removed: ${e.message}")
+        }
+        stopSelf()
+    }
+
     override fun onDestroy() {
+        try {
+            WardSessionManager.disconnect(this)
+        } catch (_: Throwable) {}
         super.onDestroy()
         Log.i(TAG, "WardRemoteSessionService destroyed")
     }
