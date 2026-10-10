@@ -343,6 +343,22 @@ pub async fn run_session(
                         }
                         let _ = sink.notify_pointer_motion(x as f64, y as f64).await;
                     }
+                    Message::MouseMoveAbsolute { mut x, mut y } => {
+                        // Coalesce consecutive MouseMoveAbsolute messages taking the latest target coordinate
+                        while let Ok(next) = input_rx.try_recv() {
+                            match next {
+                                Message::MouseMoveAbsolute { x: nx, y: ny } => {
+                                    x = nx;
+                                    y = ny;
+                                }
+                                other => {
+                                    pending_msg = Some(other);
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = sink.notify_pointer_motion_absolute(x as f64, y as f64).await;
+                    }
                     Message::MouseButton { button, state } => {
                         let btn_code = match button {
                             1 => buttons::BTN_LEFT,

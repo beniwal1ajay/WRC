@@ -1,0 +1,6 @@
+*.apk
+target/
+.gradle/
+build/
+local.properties
+.DS_Store

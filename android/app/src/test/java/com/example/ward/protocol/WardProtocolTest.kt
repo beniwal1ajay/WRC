@@ -141,6 +141,32 @@ class WardProtocolTest {
     }
 
     @Test
+    fun testMouseMoveAbsoluteSerialization() {
+        val msg = WardMessage.MouseMoveAbsolute(1920f, 1080f)
+        val bytes = msg.serialize()
+        assertEquals(8, bytes.size)
+
+        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+        assertEquals(1920f, buf.float, 0.001f)
+        assertEquals(1080f, buf.float, 0.001f)
+    }
+
+    @Test
+    fun testMouseMoveAbsoluteStreamRoundtrip() {
+        val out = ByteArrayOutputStream()
+        val msg = WardMessage.MouseMoveAbsolute(500.5f, 300.25f)
+        writeMessage(out, msg, 42)
+
+        val inputStream = ByteArrayInputStream(out.toByteArray())
+        val header = readHeader(inputStream)
+        val payload = readPayload(inputStream, header.payloadLen)
+
+        assertEquals(MessageType.MOUSE_MOVE_ABSOLUTE, header.type)
+        assertEquals(42, header.sequence)
+        assertEquals(8, payload.size)
+    }
+
+    @Test
     fun testStreamRoundtrip() {
         val out = ByteArrayOutputStream()
         val msg = WardMessage.MouseMove(100f, 200f)

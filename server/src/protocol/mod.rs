@@ -28,6 +28,7 @@ pub enum MessageType {
     MouseMove = 0x0020,
     MouseButton = 0x0021,
     MouseScroll = 0x0022,
+    MouseMoveAbsolute = 0x0023,
     KeyDown = 0x0030,
     KeyUp = 0x0031,
     ClipboardSet = 0x0040,
@@ -56,6 +57,7 @@ impl MessageType {
             0x0020 => Some(Self::MouseMove),
             0x0021 => Some(Self::MouseButton),
             0x0022 => Some(Self::MouseScroll),
+            0x0023 => Some(Self::MouseMoveAbsolute),
             0x0030 => Some(Self::KeyDown),
             0x0031 => Some(Self::KeyUp),
             0x0040 => Some(Self::ClipboardSet),
@@ -204,6 +206,10 @@ pub enum Message {
         x: f32,
         y: f32,
     },
+    MouseMoveAbsolute {
+        x: f32,
+        y: f32,
+    },
     MouseButton {
         button: u8,
         state: u8,
@@ -262,6 +268,7 @@ impl Message {
             Self::VideoKeyframe { .. } => MessageType::VideoKeyframe,
             Self::KeyframeRequest => MessageType::KeyframeRequest,
             Self::MouseMove { .. } => MessageType::MouseMove,
+            Self::MouseMoveAbsolute { .. } => MessageType::MouseMoveAbsolute,
             Self::MouseButton { .. } => MessageType::MouseButton,
             Self::MouseScroll { .. } => MessageType::MouseScroll,
             Self::KeyDown { .. } => MessageType::KeyDown,
@@ -328,7 +335,7 @@ impl Message {
                 buf.extend_from_slice(data);
             }
             Self::KeyframeRequest => {}
-            Self::MouseMove { x, y } => {
+            Self::MouseMove { x, y } | Self::MouseMoveAbsolute { x, y } => {
                 buf.extend_from_slice(&x.to_be_bytes());
                 buf.extend_from_slice(&y.to_be_bytes());
             }
@@ -523,7 +530,7 @@ impl Message {
                 }
             }
             MessageType::KeyframeRequest => Ok(Self::KeyframeRequest),
-            MessageType::MouseMove => {
+            MessageType::MouseMove | MessageType::MouseMoveAbsolute => {
                 let mut f32_buf = [0u8; 4];
                 cur.read_exact(&mut f32_buf)?;
                 let x = f32::from_be_bytes(f32_buf);
@@ -531,7 +538,11 @@ impl Message {
                 cur.read_exact(&mut f32_buf)?;
                 let y = f32::from_be_bytes(f32_buf);
 
-                Ok(Self::MouseMove { x, y })
+                if msg_type == MessageType::MouseMoveAbsolute {
+                    Ok(Self::MouseMoveAbsolute { x, y })
+                } else {
+                    Ok(Self::MouseMove { x, y })
+                }
             }
             MessageType::MouseButton => {
                 let mut byte_buf = [0u8; 1];
@@ -852,6 +863,20 @@ mod tests {
         let (_, (header, received)) = tokio::try_join!(write_fut, read_fut).unwrap();
         assert_eq!(header.sequence, 7);
         assert_eq!(header.msg_type, MessageType::MouseMove);
+        assert_eq!(msg, received);
+    }
+
+    #[tokio::test]
+    async fn test_async_read_write_mouse_move_absolute() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let msg = Message::MouseMoveAbsolute { x: 1920.0, y: 1080.0 };
+
+        let write_fut = write_message(&mut client, &msg, 8);
+        let read_fut = read_message(&mut server);
+
+        let (_, (header, received)) = tokio::try_join!(write_fut, read_fut).unwrap();
+        assert_eq!(header.sequence, 8);
+        assert_eq!(header.msg_type, MessageType::MouseMoveAbsolute);
         assert_eq!(msg, received);
     }
 

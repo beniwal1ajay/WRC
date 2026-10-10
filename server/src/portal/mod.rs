@@ -29,6 +29,13 @@ impl InputSink {
         }
     }
 
+    pub async fn notify_pointer_motion_absolute(&self, x: f64, y: f64) -> Result<()> {
+        match self {
+            InputSink::Mutter(m) => m.notify_pointer_motion_absolute(x, y).await,
+            InputSink::Portal(p) => p.lock().await.notify_pointer_motion_absolute_default(x, y).await,
+        }
+    }
+
     pub async fn notify_pointer_button(&self, button: i32, state: ButtonState) -> Result<()> {
         match self {
             InputSink::Mutter(m) => m.notify_pointer_button(button, state).await,

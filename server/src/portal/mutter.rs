@@ -44,6 +44,8 @@ pub fn open_pipewire_socket() -> Result<OwnedFd> {
 pub struct MutterRemoteDesktop {
     connection: Connection,
     session_path: OwnedObjectPath,
+    pub session_id: String,
+    stream_path: std::sync::RwLock<Option<String>>,
 }
 
 impl MutterRemoteDesktop {
@@ -73,17 +75,35 @@ impl MutterRemoteDesktop {
         .await
         .context("Failed to create Mutter RemoteDesktop.Session proxy")?;
 
-        let _: () = session_proxy
-            .call("Start", &())
+        let session_id: String = session_proxy
+            .get_property("SessionId")
             .await
-            .context("Mutter RemoteDesktop Start failed")?;
+            .context("Failed to get Mutter RemoteDesktop SessionId property")?;
 
-        info!("Mutter RemoteDesktop session started");
+        info!("Mutter RemoteDesktop session initialized (SessionId: {})", session_id);
 
         Ok(Self {
             connection: connection.clone(),
             session_path,
+            session_id,
+            stream_path: std::sync::RwLock::new(None),
         })
+    }
+
+    pub fn set_stream_path(&self, stream: String) {
+        if let Ok(mut lock) = self.stream_path.write() {
+            *lock = Some(stream);
+        }
+    }
+
+    pub async fn start(&self) -> Result<()> {
+        let proxy = self.session_proxy().await?;
+        let _: () = proxy
+            .call("Start", &())
+            .await
+            .context("Mutter RemoteDesktop Start failed")?;
+        info!("Mutter RemoteDesktop session started");
+        Ok(())
     }
 
     async fn session_proxy(&self) -> Result<zbus::Proxy<'_>> {
@@ -100,6 +120,13 @@ impl MutterRemoteDesktop {
     pub async fn notify_pointer_motion(&self, dx: f64, dy: f64) -> Result<()> {
         let proxy = self.session_proxy().await?;
         let _: () = proxy.call("NotifyPointerMotionRelative", &(dx, dy)).await?;
+        Ok(())
+    }
+
+    pub async fn notify_pointer_motion_absolute(&self, x: f64, y: f64) -> Result<()> {
+        let proxy = self.session_proxy().await?;
+        let stream = self.stream_path.read().unwrap().clone().unwrap_or_default();
+        let _: () = proxy.call("NotifyPointerMotionAbsolute", &(stream.as_str(), x, y)).await?;
         Ok(())
     }
 
@@ -146,92 +173,16 @@ impl MutterRemoteDesktop {
     }
 }
 
+
 /// Screen capture controller using Mutter's ScreenCast session D-Bus API.
 pub struct MutterScreenCast {
     connection: Connection,
     session_path: OwnedObjectPath,
+    pub stream_path: OwnedObjectPath,
     pub node_id: u32,
 }
 
 impl MutterScreenCast {
-    pub async fn new(connection: &Connection) -> Result<Self> {
-        let sc_proxy = zbus::Proxy::new(
-            connection,
-            "org.gnome.Mutter.ScreenCast",
-            "/org/gnome/Mutter/ScreenCast",
-            "org.gnome.Mutter.ScreenCast",
-        )
-        .await
-        .context("Failed to create org.gnome.Mutter.ScreenCast proxy")?;
-
-        let empty_props: HashMap<&str, Value<'_>> = HashMap::new();
-        let session_path: OwnedObjectPath = sc_proxy
-            .call("CreateSession", &(empty_props,))
-            .await
-            .context("Mutter ScreenCast CreateSession failed")?;
-
-        info!("Created Mutter ScreenCast session: {}", session_path);
-
-        let session_proxy = zbus::Proxy::new(
-            connection,
-            "org.gnome.Mutter.ScreenCast",
-            &session_path,
-            "org.gnome.Mutter.ScreenCast.Session",
-        )
-        .await
-        .context("Failed to create Mutter ScreenCast.Session proxy")?;
-
-        let mut record_props: HashMap<&str, Value<'_>> = HashMap::new();
-        // Mutter ScreenCast cursor-mode enum: 0 = Hidden, 1 = Embedded, 2 = Metadata
-        // Setting to 1 (Embedded) instructs Mutter to render and burn the cursor directly into the screen capture framebuffer
-        record_props.insert("cursor-mode", Value::from(1u32));
-        let stream_path: OwnedObjectPath = session_proxy
-            .call("RecordMonitor", &("", record_props))
-            .await
-            .context("Mutter ScreenCast RecordMonitor failed")?;
-
-        info!("Created Mutter ScreenCast stream with embedded cursor (cursor-mode=1): {}", stream_path);
-
-        let stream_proxy = zbus::Proxy::new(
-            connection,
-            "org.gnome.Mutter.ScreenCast",
-            &stream_path,
-            "org.gnome.Mutter.ScreenCast.Stream",
-        )
-        .await
-        .context("Failed to create Mutter ScreenCast.Stream proxy")?;
-
-        let mut signal_stream = stream_proxy
-            .receive_signal("PipeWireStreamAdded")
-            .await
-            .context("Failed to subscribe to PipeWireStreamAdded signal")?;
-
-        let _: () = session_proxy
-            .call("Start", &())
-            .await
-            .context("Mutter ScreenCast Start failed")?;
-
-        info!("Mutter ScreenCast session started; awaiting PipeWire node ID...");
-
-        let signal_msg = tokio::time::timeout(Duration::from_secs(5), signal_stream.next())
-            .await
-            .context("Timeout waiting for Mutter PipeWireStreamAdded signal")?
-            .context("Stream ended before PipeWireStreamAdded received")?;
-
-        let (node_id,): (u32,) = signal_msg
-            .body()
-            .deserialize()
-            .context("Failed to deserialize PipeWireStreamAdded node_id")?;
-
-        info!("Mutter ScreenCast stream active with PipeWire node {}", node_id);
-
-        Ok(Self {
-            connection: connection.clone(),
-            session_path,
-            node_id,
-        })
-    }
-
     pub async fn stop(&self) -> Result<()> {
         let session_proxy = zbus::Proxy::new(
             &self.connection,
@@ -254,14 +205,90 @@ pub struct MutterSession {
 }
 
 impl MutterSession {
-    /// Initialize a new Mutter ScreenCast + RemoteDesktop session.
+    /// Initialize a new Mutter ScreenCast + RemoteDesktop session linked together.
     pub async fn new() -> Result<Self> {
         let connection = Connection::session()
             .await
             .context("Failed to connect to session D-Bus for Mutter backend")?;
 
-        let screencast = MutterScreenCast::new(&connection).await?;
         let remote_desktop = Arc::new(MutterRemoteDesktop::new(&connection).await?);
+
+        let sc_proxy = zbus::Proxy::new(
+            &connection,
+            "org.gnome.Mutter.ScreenCast",
+            "/org/gnome/Mutter/ScreenCast",
+            "org.gnome.Mutter.ScreenCast",
+        )
+        .await
+        .context("Failed to create org.gnome.Mutter.ScreenCast proxy")?;
+
+        let mut sc_props: HashMap<&str, Value<'_>> = HashMap::new();
+        sc_props.insert("remote-desktop-session-id", Value::from(remote_desktop.session_id.as_str()));
+        let sc_session_path: OwnedObjectPath = sc_proxy
+            .call("CreateSession", &(sc_props,))
+            .await
+            .context("Mutter ScreenCast CreateSession failed")?;
+
+        info!("Created Mutter ScreenCast session linked to RemoteDesktop: {}", sc_session_path);
+
+        let sc_session_proxy = zbus::Proxy::new(
+            &connection,
+            "org.gnome.Mutter.ScreenCast",
+            &sc_session_path,
+            "org.gnome.Mutter.ScreenCast.Session",
+        )
+        .await
+        .context("Failed to create Mutter ScreenCast.Session proxy")?;
+
+        let mut record_props: HashMap<&str, Value<'_>> = HashMap::new();
+        // Mutter ScreenCast cursor-mode enum: 0 = Hidden, 1 = Embedded, 2 = Metadata
+        // Setting to 1 (Embedded) instructs Mutter to render and burn the cursor directly into the screen capture framebuffer
+        record_props.insert("cursor-mode", Value::from(1u32));
+        let stream_path: OwnedObjectPath = sc_session_proxy
+            .call("RecordMonitor", &("", record_props))
+            .await
+            .context("Mutter ScreenCast RecordMonitor failed")?;
+
+        info!("Created Mutter ScreenCast stream with embedded cursor (cursor-mode=1): {}", stream_path);
+
+        let stream_proxy = zbus::Proxy::new(
+            &connection,
+            "org.gnome.Mutter.ScreenCast",
+            &stream_path,
+            "org.gnome.Mutter.ScreenCast.Stream",
+        )
+        .await
+        .context("Failed to create Mutter ScreenCast.Stream proxy")?;
+
+        let mut signal_stream = stream_proxy
+            .receive_signal("PipeWireStreamAdded")
+            .await
+            .context("Failed to subscribe to PipeWireStreamAdded signal")?;
+
+        // Start RemoteDesktop (this automatically starts the linked ScreenCast session)
+        remote_desktop.start().await?;
+        remote_desktop.set_stream_path(stream_path.to_string());
+
+        info!("Mutter ScreenCast session started; awaiting PipeWire node ID...");
+
+        let signal_msg = tokio::time::timeout(Duration::from_secs(5), signal_stream.next())
+            .await
+            .context("Timeout waiting for Mutter PipeWireStreamAdded signal")?
+            .context("Stream ended before PipeWireStreamAdded received")?;
+
+        let (node_id,): (u32,) = signal_msg
+            .body()
+            .deserialize()
+            .context("Failed to deserialize PipeWireStreamAdded node_id")?;
+
+        info!("Mutter ScreenCast stream active with PipeWire node {}", node_id);
+
+        let screencast = MutterScreenCast {
+            connection: connection.clone(),
+            session_path: sc_session_path,
+            stream_path,
+            node_id,
+        };
 
         Ok(Self {
             screencast,

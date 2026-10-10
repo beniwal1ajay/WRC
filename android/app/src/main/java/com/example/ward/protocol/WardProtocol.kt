@@ -24,6 +24,7 @@ enum class MessageType(val code: Short) {
     MOUSE_MOVE(0x0020),
     MOUSE_BUTTON(0x0021),
     MOUSE_SCROLL(0x0022),
+    MOUSE_MOVE_ABSOLUTE(0x0023),
     KEY_DOWN(0x0030),
     KEY_UP(0x0031),
     CLIPBOARD_SET(0x0040),
@@ -345,6 +346,15 @@ sealed class WardMessage(val type: MessageType) {
     }
 
     data class MouseMove(val x: Float, val y: Float) : WardMessage(MessageType.MOUSE_MOVE) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+            buf.putFloat(x)
+            buf.putFloat(y)
+            return buf.array()
+        }
+    }
+
+    data class MouseMoveAbsolute(val x: Float, val y: Float) : WardMessage(MessageType.MOUSE_MOVE_ABSOLUTE) {
         override fun serialize(): ByteArray {
             val buf = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
             buf.putFloat(x)

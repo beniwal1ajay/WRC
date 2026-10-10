@@ -270,6 +270,11 @@ impl RemoteDesktopPortal {
         Ok(())
     }
 
+    pub async fn notify_pointer_motion_absolute_default(&self, x: f64, y: f64) -> Result<()> {
+        let node_id = self.streams.first().map(|s| s.pipewire_node_id).unwrap_or(0);
+        self.notify_pointer_motion_absolute(node_id, x, y).await
+    }
+
     /// Button codes follow Linux evdev: BTN_LEFT=272, BTN_RIGHT=273, BTN_MIDDLE=274
     pub async fn notify_pointer_button(&self, button: i32, state: ButtonState) -> Result<()> {
         let session = self.session_handle.as_ref().context("No session")?;

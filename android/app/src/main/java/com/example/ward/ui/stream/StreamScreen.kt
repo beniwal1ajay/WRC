@@ -56,6 +56,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.net.InetSocketAddress
 import java.net.Socket
+import com.example.ward.ui.stream.input.WardInputMapper
+import com.example.ward.ui.stream.input.WardInputListener
 
 // Linux X11/XKB keysyms
 private const val KEYSYM_FLAG = 0x80000000.toInt()
@@ -179,6 +181,9 @@ fun WardRemoteApp() {
     var showShortcuts by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
+    var inputMode by remember { mutableStateOf(InputMode.CURSOR) }
+    var showModeSelector by remember { mutableStateOf(false) }
+    var modeSwitchBannerText by remember { mutableStateOf<String?>(null) }
 
     val prefRes = remember { deviceStore.getPreferredResolution() }
     val prefFpsVal = remember { deviceStore.getPreferredFps() }
@@ -221,10 +226,11 @@ fun WardRemoteApp() {
     // Intercept back gesture/button during active session: dismiss overlays first, or disconnect cleanly
     if (connectionState is ConnectionState.Connected) {
         BackHandler {
-            if (showDiagnostics || showQualityDialog || showShortcuts) {
+            if (showDiagnostics || showQualityDialog || showShortcuts || showModeSelector) {
                 showDiagnostics = false
                 showQualityDialog = false
                 showShortcuts = false
+                showModeSelector = false
             } else {
                 WardSessionManager.disconnect(context)
             }
@@ -285,6 +291,41 @@ fun WardRemoteApp() {
         }
     }
 
+    val inputMapper = remember {
+        WardInputMapper(object : WardInputListener {
+            override fun sendMouseMove(dx: Float, dy: Float) {
+                WardSessionManager.sendInput(WardMessage.MouseMove(dx, dy))
+            }
+
+            override fun sendMouseMoveAbsolute(x: Float, y: Float) {
+                WardSessionManager.sendInput(WardMessage.MouseMoveAbsolute(x, y))
+            }
+
+            override fun sendMouseButton(button: Int, state: Int) {
+                WardSessionManager.sendInput(WardMessage.MouseButton(button.toByte(), state.toByte()))
+            }
+
+            override fun sendMouseScroll(dx: Float, dy: Float) {
+                WardSessionManager.sendInput(WardMessage.MouseScroll(dx, dy))
+            }
+
+            override fun sendKeysym(keysym: Int) {
+                sendKeysym(keysym)
+            }
+        })
+    }
+
+    LaunchedEffect(inputMode) {
+        inputMapper.setMode(inputMode)
+    }
+
+    LaunchedEffect(modeSwitchBannerText) {
+        if (modeSwitchBannerText != null) {
+            delay(1500)
+            modeSwitchBannerText = null
+        }
+    }
+
     // Auto-contract bar after 8 seconds of inactivity
     LaunchedEffect(isBarCollapsed, lastBarInteraction) {
         if (!isBarCollapsed) {
@@ -338,218 +379,28 @@ fun WardRemoteApp() {
                     )
                 }
 
-                // 2. Full-screen Multi-Gesture Touchpad Overlay with System UI boundaries & mouse support
+                // 2. Full-screen Multi-Gesture Touchpad / Direct-Touch Overlay with System UI boundaries & mouse support
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
                         android.view.View(ctx).apply {
-                            // Touch tracking variables
-                            var lastX1 = 0f
-                            var lastY1 = 0f
-                            var lastX2 = 0f
-                            var lastY2 = 0f
-                            var downX = 0f
-                            var downY = 0f
-                            var downTime = 0L
-                            var pointerCount = 0
-                            var isDragging = false
-                            var threeFingerSwipeStartY = 0f
-                            var accumulatedDx = 0f
-                            var accumulatedDy = 0f
-                            var lastMoveDispatchTime = 0L
-
-                            // Generic motion listener for physical mouse scroll wheels & hover motion
                             setOnGenericMotionListener { _, event ->
-                                if (event.isFromSource(InputDevice.SOURCE_MOUSE) || event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)) {
-                                    when (event.action) {
-                                        MotionEvent.ACTION_SCROLL -> {
-                                            val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
-                                            val hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
-                                            if (Math.abs(vScroll) > 0.01f) {
-                                                val stepY = if (vScroll > 0) -1.0f else 1.0f
-                                                WardSessionManager.sendInput(WardMessage.MouseScroll(0f, stepY))
-                                            }
-                                            if (Math.abs(hScroll) > 0.01f) {
-                                                val stepX = if (hScroll > 0) 1.0f else -1.0f
-                                                WardSessionManager.sendInput(WardMessage.MouseScroll(stepX, 0f))
-                                            }
-                                            true
-                                        }
-                                        MotionEvent.ACTION_HOVER_MOVE -> {
-                                            val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                                            val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                                            if (rx != 0f || ry != 0f) {
-                                                WardSessionManager.sendInput(WardMessage.MouseMove(rx, ry))
-                                            }
-                                            true
-                                        }
-                                        else -> false
-                                    }
-                                } else false
+                                inputMapper.onGenericMotion(event)
                             }
 
                             setOnTouchListener { v, event ->
-                                pointerCount = event.pointerCount
-
-                                // Physical mouse button events
-                                if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
-                                    when (event.actionMasked) {
-                                        MotionEvent.ACTION_DOWN -> {
-                                            val buttonState = event.buttonState
-                                            if ((buttonState and MotionEvent.BUTTON_PRIMARY) != 0) {
-                                                WardSessionManager.sendInput(WardMessage.MouseButton(1, 1))
-                                            }
-                                            if ((buttonState and MotionEvent.BUTTON_SECONDARY) != 0) {
-                                                WardSessionManager.sendInput(WardMessage.MouseButton(2, 1))
-                                            }
-                                            if ((buttonState and MotionEvent.BUTTON_TERTIARY) != 0) {
-                                                WardSessionManager.sendInput(WardMessage.MouseButton(3, 1))
-                                            }
-                                            return@setOnTouchListener true
-                                        }
-                                        MotionEvent.ACTION_UP -> {
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 0))
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(2, 0))
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(3, 0))
-                                            return@setOnTouchListener true
-                                        }
-                                        MotionEvent.ACTION_MOVE -> {
-                                            val rx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                                            val ry = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                                            if (rx != 0f || ry != 0f) {
-                                                WardSessionManager.sendInput(WardMessage.MouseMove(rx, ry))
-                                            }
-                                            return@setOnTouchListener true
-                                        }
-                                    }
+                                if (showModeSelector) {
+                                    showModeSelector = false
                                 }
 
-                                // Virtual touchpad gesture handling
-                                when (event.actionMasked) {
-                                    MotionEvent.ACTION_DOWN -> {
-                                        downX = event.x
-                                        downY = event.y
-                                        lastX1 = event.x
-                                        lastY1 = event.y
-                                        accumulatedDx = 0f
-                                        accumulatedDy = 0f
-                                        lastMoveDispatchTime = System.currentTimeMillis()
-                                        downTime = System.currentTimeMillis()
-                                        isDragging = false
-                                        v.performClick()
-                                        true
-                                    }
-
-                                    MotionEvent.ACTION_POINTER_DOWN -> {
-                                        if (pointerCount == 2) {
-                                            lastX1 = event.getX(0)
-                                            lastY1 = event.getY(0)
-                                            lastX2 = event.getX(1)
-                                            lastY2 = event.getY(1)
-                                        } else if (pointerCount == 3) {
-                                            threeFingerSwipeStartY = event.getY(0)
-                                        }
-                                        true
-                                    }
-
-                                    MotionEvent.ACTION_MOVE -> {
-                                        val now = System.currentTimeMillis()
-
-                                        if (pointerCount == 1) {
-                                            val dx = event.x - lastX1
-                                            val dy = event.y - lastY1
-                                            lastX1 = event.x
-                                            lastY1 = event.y
-
-                                            accumulatedDx += dx
-                                            accumulatedDy += dy
-
-                                            val totalDist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
-
-                                            // Enter drag mode if held down for > 350ms
-                                            if (!isDragging && now - downTime > 350 && totalDist < 25) {
-                                                isDragging = true
-                                                WardSessionManager.sendInput(WardMessage.MouseButton(1, 1))
-                                            }
-
-                                            // Pace pointer updates to ~100Hz max to avoid D-Bus saturation
-                                            if (now - lastMoveDispatchTime >= 10L) {
-                                                if (accumulatedDx != 0f || accumulatedDy != 0f) {
-                                                    WardSessionManager.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
-                                                    accumulatedDx = 0f
-                                                    accumulatedDy = 0f
-                                                }
-                                                lastMoveDispatchTime = now
-                                            }
-                                        } else if (pointerCount == 2) {
-                                            // 2-finger scroll
-                                            val currentY1 = event.getY(0)
-                                            val currentY2 = event.getY(1)
-                                            val currentX1 = event.getX(0)
-                                            val currentX2 = event.getX(1)
-
-                                            val dy = ((currentY1 - lastY1) + (currentY2 - lastY2)) / 2f
-                                            val dx = ((currentX1 - lastX1) + (currentX2 - lastX2)) / 2f
-
-                                            if (Math.abs(dy) > 2f) {
-                                                val stepY = if (dy > 0) 1.0f else -1.0f
-                                                WardSessionManager.sendInput(WardMessage.MouseScroll(0f, stepY))
-                                            }
-
-                                            if (Math.abs(dx) > 4f) {
-                                                val stepX = if (dx > 0) 1.0f else -1.0f
-                                                WardSessionManager.sendInput(WardMessage.MouseScroll(stepX, 0f))
-                                            }
-
-                                            lastX1 = currentX1
-                                            lastY1 = currentY1
-                                            lastX2 = currentX2
-                                            lastY2 = currentY2
-                                        } else if (pointerCount == 3) {
-                                            // 3-finger swipe up for Super / Windows key
-                                            val currentY = event.getY(0)
-                                            if (threeFingerSwipeStartY - currentY > 120f) {
-                                                sendKeysym(KEYSYM_SUPER)
-                                                threeFingerSwipeStartY = currentY
-                                            }
-                                        }
-                                        true
-                                    }
-
-                                    MotionEvent.ACTION_POINTER_UP -> {
-                                        val duration = System.currentTimeMillis() - downTime
-                                        if (pointerCount == 2 && duration < 250) {
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(2, 1))
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(2, 0))
-                                        } else if (pointerCount == 3 && duration < 250) {
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(3, 1))
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(3, 0))
-                                        }
-                                        true
-                                    }
-
-                                    MotionEvent.ACTION_UP -> {
-                                        if (accumulatedDx != 0f || accumulatedDy != 0f) {
-                                            WardSessionManager.sendInput(WardMessage.MouseMove(accumulatedDx, accumulatedDy))
-                                            accumulatedDx = 0f
-                                            accumulatedDy = 0f
-                                        }
-
-                                        val duration = System.currentTimeMillis() - downTime
-                                        val dist = Math.hypot((event.x - downX).toDouble(), (event.y - downY).toDouble())
-
-                                        if (isDragging) {
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 0))
-                                            isDragging = false
-                                        } else if (duration < 220 && dist < 20) {
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 1))
-                                            WardSessionManager.sendInput(WardMessage.MouseButton(1, 0))
-                                        }
-                                        true
-                                    }
-
-                                    else -> false
-                                }
+                                inputMapper.onTouchEvent(
+                                    view = v,
+                                    event = event,
+                                    viewWidth = v.width.toFloat(),
+                                    viewHeight = v.height.toFloat(),
+                                    remoteWidth = streamWidth,
+                                    remoteHeight = streamHeight
+                                )
                             }
                         }
                     }
@@ -692,6 +543,24 @@ fun WardRemoteApp() {
                                     Text("⚙️", fontSize = 13.sp, color = Color.White)
                                 }
 
+                                // Mode Switch Toggle (Cursor 🖱 vs Touch 👆)
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        inputMode = if (inputMode == InputMode.CURSOR) InputMode.TOUCH else InputMode.CURSOR
+                                        modeSwitchBannerText = if (inputMode == InputMode.TOUCH) "👆 Switched to Touch Mode" else "🖱 Switched to Cursor Mode"
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (inputMode == InputMode.TOUCH) Color(0xFF8B5CF6) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(30.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(inputMode.icon, fontSize = 13.sp, color = Color.White)
+                                }
+
                                 HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp, modifier = Modifier.width(36.dp))
 
                                 // Direct Keyboard Trigger
@@ -794,9 +663,25 @@ fun WardRemoteApp() {
                     // Right Edge Scroll Up / Down Buttons (only denoted by signs ▲ and ▼)
                     Column(
                         modifier = Modifier.align(Alignment.CenterEnd).padding(end = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        // Floating Mode Switch Button (Landscape)
+                        Button(
+                            onClick = { showModeSelector = !showModeSelector },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (inputMode == InputMode.TOUCH) Color(0xEE8B5CF6) else Color(0xEE141824),
+                                contentColor = Color.White
+                            ),
+                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.size(48.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            elevation = ButtonDefaults.buttonElevation(6.dp)
+                        ) {
+                            Text(inputMode.icon, fontSize = 20.sp)
+                        }
+
                         // Scroll Up button
                         Button(
                             onClick = { WardSessionManager.sendInput(WardMessage.MouseScroll(0f, -1.0f)) },
@@ -942,6 +827,24 @@ fun WardRemoteApp() {
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Text("⚙️ Quality", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+
+                                    // Mode Switch Toggle (Cursor 🖱 vs Touch 👆)
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            inputMode = if (inputMode == InputMode.CURSOR) InputMode.TOUCH else InputMode.CURSOR
+                                            modeSwitchBannerText = if (inputMode == InputMode.TOUCH) "👆 Switched to Touch Mode" else "🖱 Switched to Cursor Mode"
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (inputMode == InputMode.TOUCH) Color(0xFF8B5CF6) else Color(0xFF334155),
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("${inputMode.icon} ${inputMode.shortLabel}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                     }
 
                                     // Direct Phone Keyboard Trigger
@@ -1454,6 +1357,154 @@ fun WardRemoteApp() {
                                 Text("Done", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                             }
                         }
+                    }
+                }
+
+                // 8. Floating Mode Switch Button (Portrait)
+                if (!isLandscape) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(bottom = 24.dp, end = 16.dp)
+                    ) {
+                        Button(
+                            onClick = { showModeSelector = !showModeSelector },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (inputMode == InputMode.TOUCH) Color(0xEE8B5CF6) else Color(0xEE141824),
+                                contentColor = Color.White
+                            ),
+                            border = BorderStroke(1.dp, Color(0x44FFFFFF)),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.size(48.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            elevation = ButtonDefaults.buttonElevation(6.dp)
+                        ) {
+                            Text(inputMode.icon, fontSize = 20.sp)
+                        }
+                    }
+                }
+
+                // 9. Floating Mode Selector Popover Card
+                AnimatedVisibility(
+                    visible = showModeSelector,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = if (isLandscape) {
+                        Modifier.align(Alignment.CenterEnd).padding(end = 68.dp)
+                    } else {
+                        Modifier.align(Alignment.BottomEnd).padding(bottom = 80.dp, end = 16.dp)
+                    }
+                ) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color(0xF2141824)),
+                        shape = RoundedCornerShape(16.dp),
+                        border = BorderStroke(1.dp, Color(0x33FFFFFF)),
+                        elevation = CardDefaults.cardElevation(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(8.dp).width(200.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "INPUT MODE",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF94A3B8),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+
+                            // Option 1: Cursor Mode (Default)
+                            Surface(
+                                color = if (inputMode == InputMode.CURSOR) Color(0xFF1E293B) else Color.Transparent,
+                                shape = RoundedCornerShape(10.dp),
+                                border = if (inputMode == InputMode.CURSOR) BorderStroke(1.dp, Color(0xFF38BDF8)) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        inputMode = InputMode.CURSOR
+                                        showModeSelector = false
+                                        modeSwitchBannerText = "🖱 Switched to Cursor Mode"
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("🖱", fontSize = 16.sp)
+                                    Column {
+                                        Text(
+                                            text = "Cursor (Trackpad)",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (inputMode == InputMode.CURSOR) Color(0xFF38BDF8) else Color.White
+                                        )
+                                        Text(
+                                            text = "Relative touchpad (Default)",
+                                            fontSize = 9.sp,
+                                            color = Color(0xFF94A3B8)
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Option 2: Touch Mode
+                            Surface(
+                                color = if (inputMode == InputMode.TOUCH) Color(0xFF1E293B) else Color.Transparent,
+                                shape = RoundedCornerShape(10.dp),
+                                border = if (inputMode == InputMode.TOUCH) BorderStroke(1.dp, Color(0xFF8B5CF6)) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        inputMode = InputMode.TOUCH
+                                        showModeSelector = false
+                                        modeSwitchBannerText = "👆 Switched to Touch Mode"
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text("👆", fontSize = 16.sp)
+                                    Column {
+                                        Text(
+                                            text = "Touch (Direct)",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (inputMode == InputMode.TOUCH) Color(0xFF8B5CF6) else Color.White
+                                        )
+                                        Text(
+                                            text = "Direct screen touch mapping",
+                                            fontSize = 9.sp,
+                                            color = Color(0xFF94A3B8)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 10. Centered Mode Switch Confirmation Pill
+                AnimatedVisibility(
+                    visible = modeSwitchBannerText != null,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.Center)
+                ) {
+                    Surface(
+                        color = Color(0xF00F172A),
+                        shape = RoundedCornerShape(20.dp),
+                        border = BorderStroke(1.dp, Color(0x44FFFFFF))
+                    ) {
+                        Text(
+                            text = modeSwitchBannerText ?: "",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
                     }
                 }
             }
