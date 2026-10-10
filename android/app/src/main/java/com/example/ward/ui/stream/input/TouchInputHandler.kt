@@ -5,7 +5,6 @@ import android.view.MotionEvent
 import android.view.View
 import com.example.ward.ui.stream.CoordinateMapper
 import com.example.ward.ui.stream.RemotePoint
-import com.example.ward.ui.stream.TouchDebugInfo
 import com.example.ward.ui.stream.ViewportRect
 
 /**
@@ -18,44 +17,6 @@ class TouchInputHandler(
     private val listener: WardInputListener,
     private val cursorTracker: CursorTracker
 ) {
-    var onDebugInfoUpdate: ((TouchDebugInfo) -> Unit)? = null
-
-    private fun emitDebug(
-        action: String,
-        rawX: Float,
-        rawY: Float,
-        targetX: Float,
-        targetY: Float,
-        warpDx: Float,
-        warpDy: Float,
-        viewWidth: Float,
-        viewHeight: Float,
-        remoteWidth: Int,
-        remoteHeight: Int,
-        viewport: ViewportRect?
-    ) {
-        onDebugInfoUpdate?.invoke(
-            TouchDebugInfo(
-                viewW = viewWidth,
-                viewH = viewHeight,
-                streamW = remoteWidth,
-                streamH = remoteHeight,
-                vpLeft = viewport?.left ?: 0f,
-                vpTop = viewport?.top ?: 0f,
-                vpW = viewport?.width ?: 0f,
-                vpH = viewport?.height ?: 0f,
-                touchX = rawX,
-                touchY = rawY,
-                targetX = targetX,
-                targetY = targetY,
-                virtualX = cursorTracker.virtualX,
-                virtualY = cursorTracker.virtualY,
-                warpDx = warpDx,
-                warpDy = warpDy,
-                eventAction = action
-            )
-        )
-    }
     // 1-finger tracking
     private var downX = 0f
     private var downY = 0f
@@ -248,22 +209,6 @@ class TouchInputHandler(
                 } else {
                     isDoubleTapHandled = false
                 }
-
-                val vpDown = CoordinateMapper.getCenteredViewport(viewWidth, viewHeight, remoteWidth, remoteHeight)
-                emitDebug(
-                    action = if (isDoubleTapHandled) "DOUBLE_TAP" else "DOWN",
-                    rawX = rawX,
-                    rawY = rawY,
-                    targetX = mapped.x,
-                    targetY = mapped.y,
-                    warpDx = if (isDoubleTapHandled) mapped.x - cursorTracker.virtualX else 0f,
-                    warpDy = if (isDoubleTapHandled) mapped.y - cursorTracker.virtualY else 0f,
-                    viewWidth = viewWidth,
-                    viewHeight = viewHeight,
-                    remoteWidth = remoteWidth,
-                    remoteHeight = remoteHeight,
-                    viewport = vpDown
-                )
                 return true
             }
 
@@ -341,22 +286,6 @@ class TouchInputHandler(
                                 cursorTracker.setAbsolute(currentRemote.x, currentRemote.y, remoteWidth, remoteHeight)
                                 lastMoveDispatchTime = now
                             }
-
-                            val vpDrag = CoordinateMapper.getCenteredViewport(viewWidth, viewHeight, remoteWidth, remoteHeight)
-                            emitDebug(
-                                action = "DRAG (ABSOLUTE)",
-                                rawX = rawX,
-                                rawY = rawY,
-                                targetX = currentRemote.x,
-                                targetY = currentRemote.y,
-                                warpDx = 0f,
-                                warpDy = 0f,
-                                viewWidth = viewWidth,
-                                viewHeight = viewHeight,
-                                remoteWidth = remoteWidth,
-                                remoteHeight = remoteHeight,
-                                viewport = vpDrag
-                            )
                         }
                     }
                 } else if (pointerCount == 2) {
@@ -459,22 +388,6 @@ class TouchInputHandler(
                             lastTapTime = System.currentTimeMillis()
                             lastTapX = rawX
                             lastTapY = rawY
-
-                            val vpUp = CoordinateMapper.getCenteredViewport(viewWidth, viewHeight, remoteWidth, remoteHeight)
-                            emitDebug(
-                                action = "TAP (ABSOLUTE)",
-                                rawX = rawX,
-                                rawY = rawY,
-                                targetX = pt.x,
-                                targetY = pt.y,
-                                warpDx = 0f,
-                                warpDy = 0f,
-                                viewWidth = viewWidth,
-                                viewHeight = viewHeight,
-                                remoteWidth = remoteWidth,
-                                remoteHeight = remoteHeight,
-                                viewport = vpUp
-                            )
                         }
                     }
                 }

@@ -17,12 +17,6 @@ class WardInputMapper(
     private val cursorHandler = CursorInputHandler(listener, cursorTracker)
     val touchHandler = TouchInputHandler(listener, cursorTracker)
 
-    var onTouchDebugUpdate: ((com.example.ward.ui.stream.TouchDebugInfo) -> Unit)? = null
-        set(value) {
-            field = value
-            touchHandler.onDebugInfoUpdate = value
-        }
-
     fun setMode(newMode: InputMode) {
         mode = newMode
     }

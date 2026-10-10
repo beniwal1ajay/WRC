@@ -183,7 +183,6 @@ fun WardRemoteApp() {
     var showQualityDialog by remember { mutableStateOf(false) }
     var inputMode by remember { mutableStateOf(InputMode.CURSOR) }
     var showModeSelector by remember { mutableStateOf(false) }
-    var modeSwitchBannerText by remember { mutableStateOf<String?>(null) }
 
     val prefRes = remember { deviceStore.getPreferredResolution() }
     val prefFpsVal = remember { deviceStore.getPreferredFps() }
@@ -317,13 +316,6 @@ fun WardRemoteApp() {
 
     LaunchedEffect(inputMode) {
         inputMapper.setMode(inputMode)
-    }
-
-    LaunchedEffect(modeSwitchBannerText) {
-        if (modeSwitchBannerText != null) {
-            delay(1500)
-            modeSwitchBannerText = null
-        }
     }
 
     // Auto-contract bar after 8 seconds of inactivity
@@ -548,7 +540,6 @@ fun WardRemoteApp() {
                                     onClick = {
                                         lastBarInteraction = System.currentTimeMillis()
                                         inputMode = if (inputMode == InputMode.CURSOR) InputMode.TOUCH else InputMode.CURSOR
-                                        modeSwitchBannerText = if (inputMode == InputMode.TOUCH) "👆 Switched to Touch Mode" else "🖱 Switched to Cursor Mode"
                                     },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = if (inputMode == InputMode.TOUCH) Color(0xFF8B5CF6) else Color(0xFF334155),
@@ -834,7 +825,6 @@ fun WardRemoteApp() {
                                         onClick = {
                                             lastBarInteraction = System.currentTimeMillis()
                                             inputMode = if (inputMode == InputMode.CURSOR) InputMode.TOUCH else InputMode.CURSOR
-                                            modeSwitchBannerText = if (inputMode == InputMode.TOUCH) "👆 Switched to Touch Mode" else "🖱 Switched to Cursor Mode"
                                         },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = if (inputMode == InputMode.TOUCH) Color(0xFF8B5CF6) else Color(0xFF334155),
@@ -1423,7 +1413,6 @@ fun WardRemoteApp() {
                                     .clickable {
                                         inputMode = InputMode.CURSOR
                                         showModeSelector = false
-                                        modeSwitchBannerText = "🖱 Switched to Cursor Mode"
                                     }
                             ) {
                                 Row(
@@ -1458,7 +1447,6 @@ fun WardRemoteApp() {
                                     .clickable {
                                         inputMode = InputMode.TOUCH
                                         showModeSelector = false
-                                        modeSwitchBannerText = "👆 Switched to Touch Mode"
                                     }
                             ) {
                                 Row(
@@ -1483,28 +1471,6 @@ fun WardRemoteApp() {
                                 }
                             }
                         }
-                    }
-                }
-
-                // 10. Centered Mode Switch Confirmation Pill
-                AnimatedVisibility(
-                    visible = modeSwitchBannerText != null,
-                    enter = fadeIn(),
-                    exit = fadeOut(),
-                    modifier = Modifier.align(Alignment.Center)
-                ) {
-                    Surface(
-                        color = Color(0xF00F172A),
-                        shape = RoundedCornerShape(20.dp),
-                        border = BorderStroke(1.dp, Color(0x44FFFFFF))
-                    ) {
-                        Text(
-                            text = modeSwitchBannerText ?: "",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                        )
                     }
                 }
             }

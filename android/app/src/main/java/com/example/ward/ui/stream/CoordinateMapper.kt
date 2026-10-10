@@ -28,28 +28,7 @@ data class RemotePoint(
     val y: Float
 )
 
-/**
- * Live alignment diagnostic telemetry for Option 2 Debug HUD.
- */
-data class TouchDebugInfo(
-    val viewW: Float = 0f,
-    val viewH: Float = 0f,
-    val streamW: Int = 0,
-    val streamH: Int = 0,
-    val vpLeft: Float = 0f,
-    val vpTop: Float = 0f,
-    val vpW: Float = 0f,
-    val vpH: Float = 0f,
-    val touchX: Float = 0f,
-    val touchY: Float = 0f,
-    val targetX: Float = 0f,
-    val targetY: Float = 0f,
-    val virtualX: Float = 0f,
-    val virtualY: Float = 0f,
-    val warpDx: Float = 0f,
-    val warpDy: Float = 0f,
-    val eventAction: String = ""
-)
+
 
 /**
  * Transformation layer that maps Android screen touch coordinates to remote desktop coordinates.
