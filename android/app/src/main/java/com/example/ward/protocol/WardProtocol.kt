@@ -12,6 +12,7 @@ const val MAX_PAYLOAD_SIZE = 16 * 1024 * 1024 // 16 MB
 const val MAX_CONTROL_PAYLOAD_SIZE = 64 * 1024 // 64 KB
 
 enum class MessageType(val code: Short) {
+    UNKNOWN(0x0000),
     CONNECTION_INIT(0x0001),
     AUTH_REQUEST(0x0002),
     AUTH_RESPONSE(0x0003),
@@ -21,6 +22,8 @@ enum class MessageType(val code: Short) {
     VIDEO_KEYFRAME(0x0011),
     VIDEO_CONFIG(0x0012),
     KEYFRAME_REQUEST(0x0013),
+    DISPLAY_LIST(0x0014),
+    DISPLAY_SELECT(0x0015),
     MOUSE_MOVE(0x0020),
     MOUSE_BUTTON(0x0021),
     MOUSE_SCROLL(0x0022),
@@ -68,7 +71,7 @@ data class Header(
             require(magic == PROTOCOL_MAGIC) { "Invalid protocol magic: $magic" }
             val version = buf.get()
             val typeCode = buf.short
-            val type = MessageType.fromCode(typeCode) ?: throw IllegalArgumentException("Unknown msg type: $typeCode")
+            val type = MessageType.fromCode(typeCode) ?: MessageType.UNKNOWN
             val payloadLen = buf.int
             require(payloadLen in 0..MAX_PAYLOAD_SIZE) { "Payload len $payloadLen exceeds maximum $MAX_PAYLOAD_SIZE" }
             if (type != MessageType.VIDEO_FRAME && type != MessageType.VIDEO_KEYFRAME) {
@@ -86,7 +89,7 @@ sealed class WardMessage(val type: MessageType) {
     abstract fun serialize(): ByteArray
 
     data class ConnectionInit(
-        val protocolVersion: Short = 1,
+        val protocolVersion: Short = 2,
         val clientType: Short = 1, // Android
         val deviceId: ByteArray = ByteArray(32),
         val deviceName: String = "Android Device"
@@ -299,6 +302,83 @@ sealed class WardMessage(val type: MessageType) {
                 val codec = buf.short
                 val fps = buf.short
                 return VideoConfig(width, height, codec, fps)
+            }
+        }
+    }
+
+    data class DisplayInfo(
+        val id: Int,
+        val isPrimary: Boolean,
+        val width: Int,
+        val height: Int,
+        val name: String
+    )
+
+    data class DisplayList(
+        val activeId: Int,
+        val displays: List<DisplayInfo>
+    ) : WardMessage(MessageType.DISPLAY_LIST) {
+        override fun serialize(): ByteArray {
+            var totalNameBytes = 0
+            val encodedNames = displays.map { d ->
+                val bytes = d.name.toByteArray(Charsets.UTF_8)
+                val len = bytes.size.coerceAtMost(255)
+                totalNameBytes += len
+                Pair(bytes, len)
+            }
+            val size = 2 + displays.size * (1 + 1 + 2 + 2 + 1) + totalNameBytes
+            val buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN)
+            buf.put(activeId.toByte())
+            buf.put(displays.size.toByte())
+            for (i in displays.indices) {
+                val d = displays[i]
+                val (nameBytes, nameLen) = encodedNames[i]
+                buf.put(d.id.toByte())
+                buf.put((if (d.isPrimary) 1 else 0).toByte())
+                buf.putShort(d.width.toShort())
+                buf.putShort(d.height.toShort())
+                buf.put(nameLen.toByte())
+                buf.put(nameBytes, 0, nameLen)
+            }
+            return buf.array()
+        }
+
+        companion object {
+            fun parse(payload: ByteArray): DisplayList {
+                val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+                val activeId = buf.get().toInt() and 0xFF
+                val count = buf.get().toInt() and 0xFF
+                val list = mutableListOf<DisplayInfo>()
+                for (i in 0 until count) {
+                    val id = buf.get().toInt() and 0xFF
+                    val isPrimary = buf.get().toInt() != 0
+                    val width = buf.short.toInt() and 0xFFFF
+                    val height = buf.short.toInt() and 0xFFFF
+                    val nameLen = buf.get().toInt() and 0xFF
+                    val nameBytes = ByteArray(nameLen)
+                    buf.get(nameBytes)
+                    val name = String(nameBytes, Charsets.UTF_8)
+                    list.add(DisplayInfo(id, isPrimary, width, height, name))
+                }
+                return DisplayList(activeId, list)
+            }
+        }
+    }
+
+    data class DisplaySelect(
+        val displayId: Int
+    ) : WardMessage(MessageType.DISPLAY_SELECT) {
+        override fun serialize(): ByteArray {
+            val buf = ByteBuffer.allocate(1).order(ByteOrder.BIG_ENDIAN)
+            buf.put(displayId.toByte())
+            return buf.array()
+        }
+
+        companion object {
+            fun parse(payload: ByteArray): DisplaySelect {
+                val buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+                val displayId = buf.get().toInt() and 0xFF
+                return DisplaySelect(displayId)
             }
         }
     }

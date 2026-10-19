@@ -110,6 +110,20 @@ pub fn create_tls_config() -> Result<Arc<rustls::ServerConfig>> {
     Ok(arc)
 }
 
+/// Run the WARD streaming server session for a single connected client with optional multi-display configuration.
+pub async fn handle_client_session_full(
+    stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    peer_addr: SocketAddr,
+    frame_rx: mpsc::Receiver<CapturedFrame>,
+    input_sink: Option<crate::portal::InputSink>,
+    displays: Vec<crate::protocol::DisplayInfo>,
+    display_switch_tx: Option<tokio::sync::mpsc::Sender<u8>>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    let transport_stream = Box::new(crate::transport::lan::LanTransportStream::new(stream, peer_addr));
+    crate::session::run_session_full(transport_stream, frame_rx, input_sink, displays, display_switch_tx, running).await
+}
+
 /// Run the WARD streaming server session for a single connected client using an InputSink.
 pub async fn handle_client_session_with_sink(
     stream: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
@@ -118,8 +132,7 @@ pub async fn handle_client_session_with_sink(
     input_sink: Option<crate::portal::InputSink>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
-    let transport_stream = Box::new(crate::transport::lan::LanTransportStream::new(stream, peer_addr));
-    crate::session::run_session(transport_stream, frame_rx, input_sink, running).await
+    handle_client_session_full(stream, peer_addr, frame_rx, input_sink, Vec::new(), None, running).await
 }
 
 /// Run the WARD streaming server session for a single connected client (backwards-compatible with RemoteDesktopPortal).

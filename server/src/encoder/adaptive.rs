@@ -15,17 +15,17 @@ impl VideoProfile {
         match tier {
             ConnectionTier::LanDirect => Self {
                 bitrate_bps: 8_000_000, // 8 Mbps
-                max_fps: 60,
+                max_fps: 45,
                 keyframe_interval_secs: 10,
             },
             ConnectionTier::VpnDirect => Self {
-                bitrate_bps: 4_500_000, // 4.5 Mbps
-                max_fps: 60,
+                bitrate_bps: 5_000_000, // 5 Mbps
+                max_fps: 45,
                 keyframe_interval_secs: 5,
             },
             ConnectionTier::P2pIce => Self {
                 bitrate_bps: 2_500_000, // 2.5 Mbps
-                max_fps: 45,
+                max_fps: 35,
                 keyframe_interval_secs: 3,
             },
             ConnectionTier::TurnRelay => Self {
@@ -72,9 +72,9 @@ impl AdaptiveVideoController {
         let frame_interval = Duration::from_micros(1_000_000 / profile.max_fps as u64);
 
         let min_fps = match tier {
-            ConnectionTier::LanDirect => 60,
-            ConnectionTier::VpnDirect => 45,
-            ConnectionTier::P2pIce => 30,
+            ConnectionTier::LanDirect => 30,
+            ConnectionTier::VpnDirect => 30,
+            ConnectionTier::P2pIce => 25,
             ConnectionTier::TurnRelay => 15,
         };
 
@@ -210,7 +210,7 @@ mod tests {
         assert!(vpn_profile.bitrate_bps > ice_profile.bitrate_bps);
         assert!(ice_profile.bitrate_bps > relay_profile.bitrate_bps);
 
-        assert_eq!(lan_profile.max_fps, 60);
+        assert_eq!(lan_profile.max_fps, 45);
         assert_eq!(relay_profile.max_fps, 30);
     }
 

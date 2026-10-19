@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 use ward_server::auth::{AuthManager, HostConfig};
 use ward_server::capture::pipewire_capture::{CaptureStats, CapturedFrame, FrameFormat, run_pipewire_capture};
 use ward_server::identity::HostIdentity;
-use ward_server::network::{DEFAULT_PORT, WardServer, handle_client_session_with_sink};
+use ward_server::network::{DEFAULT_PORT, WardServer, handle_client_session_with_sink, handle_client_session_full};
 use ward_server::portal::InputSink;
 use ward_server::portal::mutter::{MutterSession, open_pipewire_socket};
 use ward_server::portal::remote_desktop::{RemoteDesktopPortal, buttons, device_types};
@@ -530,18 +530,21 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                                 }
                             };
 
-                            let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(2);
-                            let pw_running = session_running.clone();
+                            let display_list = mutter.get_display_list();
+                            let (display_switch_tx, mut display_switch_rx) = tokio::sync::mpsc::channel::<u8>(8);
+
+                            let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(4);
                             let pw_stats = Arc::new(CaptureStats::default());
+                            let current_pw_running = Arc::new(AtomicBool::new(true));
 
                             let capture_handle = match run_pipewire_capture(
                                 pw_fd,
                                 mutter.screencast.node_id,
-                                pw_tx,
-                                pw_running,
-                                pw_stats,
+                                pw_tx.clone(),
+                                current_pw_running.clone(),
+                                pw_stats.clone(),
                             ) {
-                                Ok(h) => h,
+                                Ok(h) => Arc::new(std::sync::Mutex::new(Some(h))),
                                 Err(e) => {
                                     error!("Failed to start PipeWire capture: {:#}", e);
                                     let _ = mutter.stop().await;
@@ -549,13 +552,84 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                                 }
                             };
 
-                            let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(1);
+                            let mutter_arc = Arc::new(mutter);
+                            let mutter_clone = mutter_arc.clone();
+                            let pw_tx_clone = pw_tx.clone();
+                            let pw_stats_clone = pw_stats.clone();
+                            let sess_running_clone = session_running.clone();
+                            let cap_running_ref = Arc::new(std::sync::Mutex::new(current_pw_running));
+                            let cap_running_clone = cap_running_ref.clone();
+                            let cap_handle_clone = capture_handle.clone();
+
+                            // Spawn display switcher watcher task for dynamic monitor switching
+                            tokio::spawn(async move {
+                                while sess_running_clone.load(Ordering::Relaxed) {
+                                    match display_switch_rx.recv().await {
+                                        Some(target_display_id) => {
+                                            info!("Display switcher triggered for target display ID {}", target_display_id);
+                                            match mutter_clone.switch_display(target_display_id).await {
+                                                Ok(new_stream) => {
+                                                    // 1. Signal current capture thread to stop
+                                                    if let Ok(lock) = cap_running_clone.lock() {
+                                                        lock.store(false, Ordering::Relaxed);
+                                                    }
+                                                    // 2. Wait for previous capture thread to finish cleanly
+                                                    let prev_handle = if let Ok(mut h_lock) = cap_handle_clone.lock() {
+                                                        h_lock.take()
+                                                    } else {
+                                                        None
+                                                    };
+                                                    if let Some(h) = prev_handle {
+                                                        let _ = tokio::task::spawn_blocking(move || h.join()).await;
+                                                    }
+
+                                                    // 3. Open new PipeWire socket and start capture for new monitor node
+                                                    match open_pipewire_socket() {
+                                                        Ok(new_pw_fd) => {
+                                                            let new_running = Arc::new(AtomicBool::new(true));
+                                                            match run_pipewire_capture(
+                                                                new_pw_fd,
+                                                                new_stream.node_id,
+                                                                pw_tx_clone.clone(),
+                                                                new_running.clone(),
+                                                                pw_stats_clone.clone(),
+                                                            ) {
+                                                                Ok(new_h) => {
+                                                                    if let Ok(mut lock) = cap_running_clone.lock() {
+                                                                        *lock = new_running;
+                                                                    }
+                                                                    if let Ok(mut h_lock) = cap_handle_clone.lock() {
+                                                                        *h_lock = Some(new_h);
+                                                                    }
+                                                                    info!("Switched PipeWire capture cleanly to node {} ({})", new_stream.node_id, new_stream.name);
+                                                                }
+                                                                Err(e) => {
+                                                                    error!("Failed to restart PipeWire capture on node {}: {:#}", new_stream.node_id, e);
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            error!("Failed to open new PipeWire socket: {:#}", e);
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!("Failed to switch Mutter display: {:#}", e);
+                                                }
+                                            }
+                                        }
+                                        None => break,
+                                    }
+                                }
+                            });
+
+                            let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(3);
 
                             // Bridge thread between sync PipeWire channel and async client channel
                             let bridge_running = session_running.clone();
                             std::thread::spawn(move || {
                                 while bridge_running.load(Ordering::Relaxed) {
-                                    match pw_rx.recv_timeout(Duration::from_millis(50)) {
+                                    match pw_rx.recv_timeout(Duration::from_millis(10)) {
                                         Ok(frame) => {
                                             let _ = client_tx.try_send(frame);
                                         }
@@ -565,13 +639,15 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                                 }
                             });
 
-                            let input_sink = InputSink::Mutter(mutter.remote_desktop.clone());
+                            let input_sink = InputSink::Mutter(mutter_arc.remote_desktop.clone());
 
-                            if let Err(e) = handle_client_session_with_sink(
+                            if let Err(e) = handle_client_session_full(
                                 tls_stream,
                                 peer_addr,
                                 client_rx,
                                 Some(input_sink),
+                                display_list,
+                                Some(display_switch_tx),
                                 session_running.clone(),
                             ).await {
                                 warn!("[DIAG] Session closed for {} with error: {:#}", peer_addr, e);
@@ -580,8 +656,15 @@ async fn run_host_server(port: u16, force_portal: bool) -> Result<()> {
                             }
 
                             session_running.store(false, Ordering::Relaxed);
-                            let _ = mutter.stop().await;
-                            let _ = capture_handle.join();
+                            if let Ok(lock) = cap_running_ref.lock() {
+                                lock.store(false, Ordering::Relaxed);
+                            }
+                            let _ = mutter_arc.stop().await;
+                            if let Ok(mut h_lock) = capture_handle.lock() {
+                                if let Some(h) = h_lock.take() {
+                                    let _ = h.join();
+                                }
+                            }
                             info!("Mutter session released. Awaiting next connection...");
                         }
                         Err(e) => {
@@ -626,7 +709,7 @@ async fn run_portal_client_session(
     let stream = streams.first().context("No capture streams returned by portal")?;
     let pw_fd = portal.open_pipewire_remote().await?;
 
-    let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(8);
+    let (pw_tx, pw_rx) = std::sync::mpsc::sync_channel::<CapturedFrame>(4);
     let pw_running = session_running.clone();
     let pw_stats = Arc::new(CaptureStats::default());
 
@@ -638,11 +721,11 @@ async fn run_portal_client_session(
         pw_stats,
     )?;
 
-    let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(4);
+    let (client_tx, client_rx) = tokio::sync::mpsc::channel::<CapturedFrame>(3);
     let bridge_running = session_running.clone();
     std::thread::spawn(move || {
         while bridge_running.load(Ordering::Relaxed) {
-            match pw_rx.recv_timeout(Duration::from_millis(50)) {
+            match pw_rx.recv_timeout(Duration::from_millis(10)) {
                 Ok(frame) => {
                     let _ = client_tx.try_send(frame);
                 }

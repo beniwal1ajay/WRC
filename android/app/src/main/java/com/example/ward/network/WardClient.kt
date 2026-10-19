@@ -80,6 +80,7 @@ class WardClient(
     private val onStateChanged: (ConnectionState) -> Unit,
     private val onVideoConfig: (width: Int, height: Int, fps: Int) -> Unit,
     private val onVideoFrame: (data: ByteArray, timestampNs: Long, isKeyframe: Boolean) -> Unit,
+    private val onDisplayList: ((WardMessage.DisplayList) -> Unit)? = null,
     private var transport: WardTransport = LanTlsTransport(),
     private val onSessionAccepted: ((WardMessage.SessionAccepted) -> Unit)? = null,
     private val onStatsUpdated: ((SessionStats) -> Unit)? = null,
@@ -182,7 +183,7 @@ class WardClient(
         // 1. Send CONNECTION_INIT
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
         val initMsg = WardMessage.ConnectionInit(
-            protocolVersion = 1,
+            protocolVersion = 2,
             clientType = 1, // Android
             deviceId = clientDeviceId,
             deviceName = deviceName
@@ -328,6 +329,11 @@ class WardClient(
                         val newConfig = WardMessage.VideoConfig.parse(msgPayload)
                         onVideoConfig(newConfig.width, newConfig.height, newConfig.fpsTarget.toInt())
                     }
+                    MessageType.DISPLAY_LIST -> {
+                        val displayList = WardMessage.DisplayList.parse(msgPayload)
+                        Log.i(TAG, "Received DisplayList from host: ${displayList.displays.size} displays, active: ${displayList.activeId}")
+                        onDisplayList?.invoke(displayList)
+                    }
                     MessageType.PONG -> {
                         val pong = WardMessage.Pong.parse(msgPayload)
                         val rttNs = System.nanoTime() - pong.timestampNs
@@ -399,6 +405,12 @@ class WardClient(
         } catch (e: Exception) {
             Log.d(TAG, "Keyframe request error: ${e.message}")
         }
+    }
+
+    fun selectDisplay(displayId: Int) {
+        if (!isConnectingOrConnected.get()) return
+        sendInput(WardMessage.DisplaySelect(displayId))
+        Log.i(TAG, "Sent DisplaySelect request for display ID $displayId")
     }
 
     fun disconnect() {

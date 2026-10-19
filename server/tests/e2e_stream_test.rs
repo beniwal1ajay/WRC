@@ -173,7 +173,7 @@ async fn test_end_to_end_streaming_session() {
             assert!(width > 0, "Video width must be > 0");
             assert!(height > 0, "Video height must be > 0");
             assert_eq!(codec, 1, "Codec should be H.264");
-            assert_eq!(fps_target, 60);
+            assert_eq!(fps_target, 45);
         }
         other => panic!("Expected VideoConfig, got {:?}", other),
     }

@@ -20,8 +20,20 @@ use crate::transport::TransportStream;
 /// Run a streaming remote desktop session over any abstract TransportStream with an InputSink.
 pub async fn run_session(
     stream: Box<dyn TransportStream>,
+    frame_rx: mpsc::Receiver<CapturedFrame>,
+    input_sink: Option<InputSink>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    run_session_full(stream, frame_rx, input_sink, Vec::new(), None, running).await
+}
+
+/// Run a streaming remote desktop session with optional multi-display configuration.
+pub async fn run_session_full(
+    mut stream: Box<dyn TransportStream>,
     mut frame_rx: mpsc::Receiver<CapturedFrame>,
     input_sink: Option<InputSink>,
+    displays: Vec<crate::protocol::DisplayInfo>,
+    display_switch_tx: Option<mpsc::Sender<u8>>,
     running: Arc<AtomicBool>,
 ) -> Result<()> {
     let transport_type = stream.transport_type();
@@ -40,13 +52,13 @@ pub async fn run_session(
     .context("Timed out waiting for CONNECTION_INIT")?
     .context("Failed to read CONNECTION_INIT")?;
 
-    let (client_device_id_bytes, client_device_name) = match init_msg {
+    let (client_device_id_bytes, client_device_name, client_proto_version) = match init_msg {
         Message::ConnectionInit { protocol_version, device_id, device_name, .. } => {
             info!(
                 "Client connected: '{}' (protocol v{}) via {}",
                 device_name, protocol_version, transport_type
             );
-            (device_id, device_name)
+            (device_id, device_name, protocol_version)
         }
         other => {
             warn!("Expected ConnectionInit, received {:?}", other.msg_type());
@@ -214,9 +226,9 @@ pub async fn run_session(
         Ok("720p")
     );
     let (stream_w, stream_h, initial_bitrate) = if is_720p {
-        (1280, 720, 8_000_000)
+        (1280, 720, 5_000_000)
     } else {
-        (1920, 1080, 12_000_000)
+        (1920, 1080, 8_000_000)
     };
     rate_controller.current_bitrate_bps = initial_bitrate;
 
@@ -226,6 +238,10 @@ pub async fn run_session(
         bitrate_bps: rate_controller.current_bitrate_bps,
         max_fps: rate_controller.current_fps as f32,
     }).context("Failed to initialize video encoder")?;
+
+    if let Some(ref s) = input_sink {
+        s.set_stream_dims(encoder.width() as u32, encoder.height() as u32);
+    }
 
     // Send initial VIDEO_CONFIG to client
     let video_config = Message::VideoConfig {
@@ -237,6 +253,17 @@ pub async fn run_session(
     let seq = sequence.fetch_add(1, Ordering::Relaxed);
     protocol::write_message(&mut writer, &video_config, seq).await
         .context("Failed to send VideoConfig")?;
+
+    if client_proto_version >= 2 && !displays.is_empty() {
+        let active_id = displays.iter().find(|d| d.is_primary).map(|d| d.id).unwrap_or(0);
+        let dl = Message::DisplayList {
+            active_id,
+            displays: displays.clone(),
+        };
+        let seq = sequence.fetch_add(1, Ordering::Relaxed);
+        let _ = protocol::write_message(&mut writer, &dl, seq).await;
+        info!("Sent initial DisplayList ({} monitors, active: {}) to client v{}", displays.len(), active_id, client_proto_version);
+    }
 
     info!(
         "Video stream configured: {}x{} @ {}fps (H.264, profile: {}, initial bitrate {} kbps)",
@@ -267,6 +294,17 @@ pub async fn run_session(
                     Message::VideoConfig { width, height, fps_target, .. } => {
                         info!("Client requested video stream change: {}x{} @ {}fps", width, height, fps_target);
                         let _ = reconfig_tx.try_send((width, height, fps_target));
+                    }
+                    Message::DisplaySelect { display_id } => {
+                        info!("Client requested display switch to ID {}", display_id);
+                        if let Some(ref tx) = display_switch_tx {
+                            let _ = tx.try_send(display_id);
+                        }
+                        let dl = Message::DisplayList {
+                            active_id: display_id,
+                            displays: displays.clone(),
+                        };
+                        let _ = outbound_tx_reader.try_send(dl);
                     }
                     Message::Ping { timestamp_ns } => {
                         let pong = Message::Pong { timestamp_ns };
@@ -469,6 +507,10 @@ pub async fn run_session(
                         Ok(new_enc) => {
                             encoder = new_enc;
                             encoder.force_keyframe();
+
+                            if let Some(ref s) = input_sink {
+                                s.set_stream_dims(w as u32, h as u32);
+                            }
 
                             // Send updated VideoConfig confirmation back to client
                             let conf = Message::VideoConfig {

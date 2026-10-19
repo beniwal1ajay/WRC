@@ -70,4 +70,10 @@ impl InputSink {
             InputSink::Portal(p) => p.lock().await.notify_keyboard_keysym(keysym, state).await,
         }
     }
+
+    pub fn set_stream_dims(&self, width: u32, height: u32) {
+        if let InputSink::Mutter(m) = self {
+            m.set_stream_dims(width, height);
+        }
+    }
 }

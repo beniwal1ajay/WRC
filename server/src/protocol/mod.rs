@@ -25,6 +25,8 @@ pub enum MessageType {
     VideoKeyframe = 0x0011,
     VideoConfig = 0x0012,
     KeyframeRequest = 0x0013,
+    DisplayList = 0x0014,
+    DisplaySelect = 0x0015,
     MouseMove = 0x0020,
     MouseButton = 0x0021,
     MouseScroll = 0x0022,
@@ -54,6 +56,8 @@ impl MessageType {
             0x0011 => Some(Self::VideoKeyframe),
             0x0012 => Some(Self::VideoConfig),
             0x0013 => Some(Self::KeyframeRequest),
+            0x0014 => Some(Self::DisplayList),
+            0x0015 => Some(Self::DisplaySelect),
             0x0020 => Some(Self::MouseMove),
             0x0021 => Some(Self::MouseButton),
             0x0022 => Some(Self::MouseScroll),
@@ -160,6 +164,16 @@ pub struct IceCandidate {
     pub priority: u32,
 }
 
+/// Display / Monitor information for multi-display setups.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DisplayInfo {
+    pub id: u8,
+    pub is_primary: bool,
+    pub width: u16,
+    pub height: u16,
+    pub name: String,
+}
+
 /// Strongly typed protocol messages.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
@@ -202,6 +216,13 @@ pub enum Message {
         data: Vec<u8>,
     },
     KeyframeRequest,
+    DisplayList {
+        active_id: u8,
+        displays: Vec<DisplayInfo>,
+    },
+    DisplaySelect {
+        display_id: u8,
+    },
     MouseMove {
         x: f32,
         y: f32,
@@ -267,6 +288,8 @@ impl Message {
             Self::VideoFrame { .. } => MessageType::VideoFrame,
             Self::VideoKeyframe { .. } => MessageType::VideoKeyframe,
             Self::KeyframeRequest => MessageType::KeyframeRequest,
+            Self::DisplayList { .. } => MessageType::DisplayList,
+            Self::DisplaySelect { .. } => MessageType::DisplaySelect,
             Self::MouseMove { .. } => MessageType::MouseMove,
             Self::MouseMoveAbsolute { .. } => MessageType::MouseMoveAbsolute,
             Self::MouseButton { .. } => MessageType::MouseButton,
@@ -335,6 +358,23 @@ impl Message {
                 buf.extend_from_slice(data);
             }
             Self::KeyframeRequest => {}
+            Self::DisplayList { active_id, displays } => {
+                buf.push(*active_id);
+                buf.push(displays.len() as u8);
+                for d in displays {
+                    buf.push(d.id);
+                    buf.push(if d.is_primary { 1 } else { 0 });
+                    buf.extend_from_slice(&d.width.to_be_bytes());
+                    buf.extend_from_slice(&d.height.to_be_bytes());
+                    let name_bytes = d.name.as_bytes();
+                    let name_len = (name_bytes.len().min(255)) as u8;
+                    buf.push(name_len);
+                    buf.extend_from_slice(&name_bytes[..name_len as usize]);
+                }
+            }
+            Self::DisplaySelect { display_id } => {
+                buf.push(*display_id);
+            }
             Self::MouseMove { x, y } | Self::MouseMoveAbsolute { x, y } => {
                 buf.extend_from_slice(&x.to_be_bytes());
                 buf.extend_from_slice(&y.to_be_bytes());
@@ -530,6 +570,38 @@ impl Message {
                 }
             }
             MessageType::KeyframeRequest => Ok(Self::KeyframeRequest),
+            MessageType::DisplayList => {
+                let mut byte_buf = [0u8; 1];
+                cur.read_exact(&mut byte_buf)?;
+                let active_id = byte_buf[0];
+                cur.read_exact(&mut byte_buf)?;
+                let count = byte_buf[0] as usize;
+                let mut displays = Vec::with_capacity(count);
+                for _ in 0..count {
+                    cur.read_exact(&mut byte_buf)?;
+                    let id = byte_buf[0];
+                    cur.read_exact(&mut byte_buf)?;
+                    let is_primary = byte_buf[0] != 0;
+                    let mut u16_buf = [0u8; 2];
+                    cur.read_exact(&mut u16_buf)?;
+                    let width = u16::from_be_bytes(u16_buf);
+                    cur.read_exact(&mut u16_buf)?;
+                    let height = u16::from_be_bytes(u16_buf);
+                    cur.read_exact(&mut byte_buf)?;
+                    let name_len = byte_buf[0] as usize;
+                    let mut name_bytes = vec![0u8; name_len];
+                    cur.read_exact(&mut name_bytes)?;
+                    let name = String::from_utf8_lossy(&name_bytes).to_string();
+                    displays.push(DisplayInfo { id, is_primary, width, height, name });
+                }
+                Ok(Self::DisplayList { active_id, displays })
+            }
+            MessageType::DisplaySelect => {
+                let mut byte_buf = [0u8; 1];
+                cur.read_exact(&mut byte_buf)?;
+                let display_id = byte_buf[0];
+                Ok(Self::DisplaySelect { display_id })
+            }
             MessageType::MouseMove | MessageType::MouseMoveAbsolute => {
                 let mut f32_buf = [0u8; 4];
                 cur.read_exact(&mut f32_buf)?;
@@ -753,6 +825,37 @@ mod tests {
         let payload = msg.serialize_payload();
         let parsed = Message::deserialize_payload(msg.msg_type(), &payload).unwrap();
         assert_eq!(msg, parsed);
+    }
+
+    #[test]
+    fn test_display_messages_roundtrip() {
+        let list_msg = Message::DisplayList {
+            active_id: 1,
+            displays: vec![
+                DisplayInfo {
+                    id: 0,
+                    is_primary: true,
+                    width: 1920,
+                    height: 1080,
+                    name: "Built-in display".to_string(),
+                },
+                DisplayInfo {
+                    id: 1,
+                    is_primary: false,
+                    width: 1920,
+                    height: 1080,
+                    name: "Samsung Electric Company 27\"".to_string(),
+                },
+            ],
+        };
+        let payload = list_msg.serialize_payload();
+        let parsed = Message::deserialize_payload(list_msg.msg_type(), &payload).unwrap();
+        assert_eq!(list_msg, parsed);
+
+        let select_msg = Message::DisplaySelect { display_id: 1 };
+        let sel_payload = select_msg.serialize_payload();
+        let sel_parsed = Message::deserialize_payload(select_msg.msg_type(), &sel_payload).unwrap();
+        assert_eq!(select_msg, sel_parsed);
     }
 
     #[test]

@@ -32,7 +32,7 @@ class WardProtocolTest {
     @Test
     fun testConnectionInitSerialization() {
         val msg = WardMessage.ConnectionInit(
-            protocolVersion = 1,
+            protocolVersion = 2,
             clientType = 1,
             deviceId = ByteArray(32) { it.toByte() },
             deviceName = "Pixel 8"
@@ -301,6 +301,42 @@ class WardProtocolTest {
 
         val header = Header.fromByteArray(validVideoBuf)
         assertEquals(1024 * 1024, header.payloadLen)
+    }
+
+    @Test
+    fun testDisplayMessagesRoundtrip() {
+        val listMsg = WardMessage.DisplayList(
+            activeId = 1,
+            displays = listOf(
+                WardMessage.DisplayInfo(
+                    id = 0,
+                    isPrimary = true,
+                    width = 1920,
+                    height = 1080,
+                    name = "Built-in display"
+                ),
+                WardMessage.DisplayInfo(
+                    id = 1,
+                    isPrimary = false,
+                    width = 1920,
+                    height = 1080,
+                    name = "Samsung Electric Company 27\""
+                )
+            )
+        )
+
+        val payload = listMsg.serialize()
+        val parsed = WardMessage.DisplayList.parse(payload)
+        assertEquals(listMsg.activeId, parsed.activeId)
+        assertEquals(listMsg.displays.size, parsed.displays.size)
+        assertEquals(listMsg.displays[0].name, parsed.displays[0].name)
+        assertEquals(listMsg.displays[1].name, parsed.displays[1].name)
+        assertEquals(listMsg.displays[1].width, parsed.displays[1].width)
+
+        val selectMsg = WardMessage.DisplaySelect(displayId = 1)
+        val selPayload = selectMsg.serialize()
+        val selParsed = WardMessage.DisplaySelect.parse(selPayload)
+        assertEquals(selectMsg.displayId, selParsed.displayId)
     }
 }
 

@@ -206,7 +206,7 @@ async fn test_vpn_remote_desktop_session_and_reconnect() {
             assert!(width > 0);
             assert!(height > 0);
             assert_eq!(codec, 1);
-            assert_eq!(fps_target, 60);
+            assert_eq!(fps_target, 45);
         }
         other => panic!("Expected VideoConfig, got {:?}", other),
     }

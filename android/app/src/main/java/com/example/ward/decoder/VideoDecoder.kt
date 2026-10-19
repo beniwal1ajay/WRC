@@ -108,7 +108,7 @@ class VideoDecoder(
         }
 
         try {
-            val inputIndex = decoder.dequeueInputBuffer(10_000) // 10ms timeout
+            val inputIndex = decoder.dequeueInputBuffer(2_000) // 2ms timeout for low latency
             if (inputIndex >= 0) {
                 val inputBuffer = decoder.getInputBuffer(inputIndex)
                 if (inputBuffer != null) {

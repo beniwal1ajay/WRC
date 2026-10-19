@@ -178,6 +178,8 @@ fun WardRemoteApp() {
     val streamWidth by WardSessionManager.streamWidth.collectAsState()
     val streamHeight by WardSessionManager.streamHeight.collectAsState()
     val sessionStats by WardSessionManager.sessionStats.collectAsState()
+    val displays by WardSessionManager.displays.collectAsState()
+    val activeDisplayId by WardSessionManager.activeDisplayId.collectAsState()
     var showShortcuts by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
@@ -434,15 +436,20 @@ fun WardRemoteApp() {
                         modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp)
                     ) {
                         Card(
+                            modifier = Modifier
+                                .padding(vertical = 6.dp)
+                                .heightIn(max = screenHeight - 20.dp),
                             colors = CardDefaults.cardColors(containerColor = Color(0xF0141824)),
                             shape = RoundedCornerShape(16.dp),
                             border = BorderStroke(1.dp, Color(0x33FFFFFF)),
                             elevation = CardDefaults.cardElevation(8.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+                                modifier = Modifier
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(vertical = 8.dp, horizontal = 6.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 // Collapse toggle button
                                 Button(
@@ -550,6 +557,31 @@ fun WardRemoteApp() {
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text(inputMode.icon, fontSize = 13.sp, color = Color.White)
+                                }
+
+                                // Display Switcher for Multi-Monitor (Always visible, Laptop vs External Monitor)
+                                val activeDisp = displays.find { it.id == activeDisplayId }
+                                val nextDisplayId = if (activeDisplayId == 0) 1 else 0
+                                val shortLabel = when {
+                                    activeDisp != null && (activeDisp.name.contains("SAM", ignoreCase = true) || activeDisp.name.contains("Samsung", ignoreCase = true)) -> "🖥️ Mon"
+                                    activeDisp != null && activeDisp.isPrimary -> "💻 Lap"
+                                    activeDisplayId == 0 -> "💻 Lap"
+                                    else -> "🖥️ Mon"
+                                }
+                                Button(
+                                    onClick = {
+                                        lastBarInteraction = System.currentTimeMillis()
+                                        WardSessionManager.selectDisplay(nextDisplayId)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (activeDisplayId == 1) Color(0xFF0F766E) else Color(0xFF334155),
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(30.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(shortLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 }
 
                                 HorizontalDivider(color = Color(0x33FFFFFF), thickness = 1.dp, modifier = Modifier.width(36.dp))
@@ -835,6 +867,31 @@ fun WardRemoteApp() {
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Text("${inputMode.icon} ${inputMode.shortLabel}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+
+                                    // Display Switcher for Multi-Monitor (Always visible)
+                                    val pActiveDisp = displays.find { it.id == activeDisplayId }
+                                    val pNextDisplayId = if (activeDisplayId == 0) 1 else 0
+                                    val pLabel = when {
+                                        pActiveDisp != null && (pActiveDisp.name.contains("SAM", ignoreCase = true) || pActiveDisp.name.contains("Samsung", ignoreCase = true)) -> "🖥️ Samsung 27\""
+                                        pActiveDisp != null && pActiveDisp.isPrimary -> "💻 Laptop (${pActiveDisp.width}x${pActiveDisp.height})"
+                                        activeDisplayId == 0 -> "💻 Laptop"
+                                        else -> "🖥️ Samsung 27\""
+                                    }
+                                    Button(
+                                        onClick = {
+                                            lastBarInteraction = System.currentTimeMillis()
+                                            WardSessionManager.selectDisplay(pNextDisplayId)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (activeDisplayId == 1) Color(0xFF0F766E) else Color(0xFF334155),
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp),
+                                        modifier = Modifier.height(30.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(pLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                     }
 
                                     // Direct Phone Keyboard Trigger
@@ -1167,7 +1224,7 @@ fun WardRemoteApp() {
                             )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Button(
                                     onClick = {
@@ -1177,12 +1234,31 @@ fun WardRemoteApp() {
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = if (targetFps >= 60) Color(0xFF059669) else Color(0xFF1E293B)
                                     ),
-                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
                                     modifier = Modifier.weight(1f).height(34.dp),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text(
-                                        text = if (targetFps >= 60) "✓ 60 FPS" else "60 FPS",
+                                        text = if (targetFps >= 60) "✓ 60" else "60",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        deviceStore.setPreferredFps(45)
+                                        WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 45)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (targetFps in 40..59) Color(0xFF059669) else Color(0xFF1E293B)
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
+                                    modifier = Modifier.weight(1f).height(34.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (targetFps in 40..59) "✓ 45" else "45",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
@@ -1194,14 +1270,14 @@ fun WardRemoteApp() {
                                         WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 30)
                                     },
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (targetFps < 60) Color(0xFF059669) else Color(0xFF1E293B)
+                                        containerColor = if (targetFps < 40) Color(0xFF059669) else Color(0xFF1E293B)
                                     ),
-                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
                                     modifier = Modifier.weight(1f).height(34.dp),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text(
-                                        text = if (targetFps < 60) "✓ 30 FPS" else "30 FPS",
+                                        text = if (targetFps < 40) "✓ 30" else "30",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
@@ -1252,10 +1328,14 @@ fun WardRemoteApp() {
                         shape = RoundedCornerShape(16.dp),
                         border = BorderStroke(1.dp, Color(0x66818CF8)),
                         elevation = CardDefaults.cardElevation(12.dp),
-                        modifier = Modifier.width(320.dp)
+                        modifier = Modifier
+                            .width(340.dp)
+                            .heightIn(max = screenHeight - 32.dp)
                     ) {
                         Column(
-                            modifier = Modifier.padding(16.dp),
+                            modifier = Modifier
+                                .verticalScroll(rememberScrollState())
+                                .padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             Row(
@@ -1277,6 +1357,40 @@ fun WardRemoteApp() {
                                 }
                             }
                             HorizontalDivider(color = Color(0x33818CF8), thickness = 1.dp)
+
+                            Text("Active Desktop Display:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                            val displayItems = if (displays.isNotEmpty()) displays else listOf(
+                                WardMessage.DisplayInfo(0, true, 1920, 1080, "Laptop Screen (eDP-1)"),
+                                WardMessage.DisplayInfo(1, false, 1920, 1080, "Samsung 27\" (HDMI-1)")
+                            )
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                displayItems.forEach { disp ->
+                                    val isSelected = disp.id == activeDisplayId
+                                    val label = when {
+                                        disp.name.contains("SAM", ignoreCase = true) || disp.name.contains("Samsung", ignoreCase = true) -> "Samsung 27\""
+                                        disp.isPrimary || disp.name.contains("Laptop", ignoreCase = true) -> "Laptop"
+                                        else -> disp.name.take(12)
+                                    }
+                                    Button(
+                                        onClick = {
+                                            WardSessionManager.selectDisplay(disp.id)
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (isSelected) Color(0xFF0F766E) else Color(0xFF1E293B)
+                                        ),
+                                        modifier = Modifier.weight(1f).height(40.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isSelected) "✓ $label" else label,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
 
                             Text("Desktop Resolution:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1309,7 +1423,7 @@ fun WardRemoteApp() {
                             }
 
                             Text("Stream Target Framerate:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Button(
                                     onClick = {
                                         deviceStore.setPreferredFps(60)
@@ -1325,16 +1439,29 @@ fun WardRemoteApp() {
                                 }
                                 Button(
                                     onClick = {
-                                        deviceStore.setPreferredFps(30)
-                                        WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 30)
+                                        deviceStore.setPreferredFps(45)
+                                        WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 45)
                                     },
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (targetFps < 60) Color(0xFF059669) else Color(0xFF1E293B)
+                                        containerColor = if (targetFps in 40..59) Color(0xFF059669) else Color(0xFF1E293B)
                                     ),
                                     modifier = Modifier.weight(1f).height(40.dp),
                                     shape = RoundedCornerShape(8.dp)
                                 ) {
-                                    Text(if (targetFps < 60) "✓ 30 FPS" else "30 FPS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    Text(if (targetFps in 40..59) "✓ 45 FPS" else "45 FPS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                                Button(
+                                    onClick = {
+                                        deviceStore.setPreferredFps(30)
+                                        WardSessionManager.requestStreamConfig(streamWidth, streamHeight, 30)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (targetFps < 40) Color(0xFF059669) else Color(0xFF1E293B)
+                                    ),
+                                    modifier = Modifier.weight(1f).height(40.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(if (targetFps < 40) "✓ 30 FPS" else "30 FPS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
                                 }
                             }
 

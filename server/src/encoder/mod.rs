@@ -95,6 +95,10 @@ impl VideoEncoder {
             .usage_type(UsageType::ScreenContentRealTime)
             .complexity(Complexity::Low)
             .skip_frames(true)
+            .num_threads(4)
+            .scene_change_detect(false)
+            .background_detection(false)
+            .adaptive_quantization(false)
             .vui(VuiConfig::srgb())
     }
 

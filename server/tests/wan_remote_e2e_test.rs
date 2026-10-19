@@ -267,7 +267,7 @@ async fn test_full_wan_remote_access_lifecycle() {
     match v_config {
         Message::VideoConfig { width, height, fps_target, .. } => {
             assert!(width > 0 && height > 0);
-            assert_eq!(fps_target, 60);
+            assert_eq!(fps_target, 45);
         }
         other => panic!("Expected VideoConfig, got {:?}", other),
     }

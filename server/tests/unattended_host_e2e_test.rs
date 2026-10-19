@@ -239,7 +239,7 @@ async fn test_unattended_host_full_lifecycle() {
         match v_config {
             Message::VideoConfig { width, height, fps_target, .. } => {
                 assert!(width > 0 && height > 0);
-                assert_eq!(fps_target, 60);
+                assert_eq!(fps_target, 45);
                 println!("5. Video stream established: {}x{} @ {}fps ✅", width, height, fps_target);
             }
             other => panic!("Expected VideoConfig, got {:?}", other),

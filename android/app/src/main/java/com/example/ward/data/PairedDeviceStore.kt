@@ -172,7 +172,7 @@ class PairedDeviceStore(context: Context) {
         prefs.edit().putInt("pref_stream_width", width).putInt("pref_stream_height", height).apply()
     }
 
-    fun getPreferredFps(): Int = prefs.getInt("pref_stream_fps", 60)
+    fun getPreferredFps(): Int = prefs.getInt("pref_stream_fps", 45)
 
     fun setPreferredFps(fps: Int) {
         prefs.edit().putInt("pref_stream_fps", fps).apply()

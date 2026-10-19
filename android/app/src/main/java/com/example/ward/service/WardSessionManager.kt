@@ -36,7 +36,7 @@ object WardSessionManager {
     private val _streamHeight = MutableStateFlow(1080)
     val streamHeight: StateFlow<Int> = _streamHeight.asStateFlow()
 
-    private val _targetFps = MutableStateFlow(60)
+    private val _targetFps = MutableStateFlow(45)
     val targetFps: StateFlow<Int> = _targetFps.asStateFlow()
 
     private val _sessionStats = MutableStateFlow<SessionStats?>(null)
@@ -44,6 +44,12 @@ object WardSessionManager {
 
     private val _activeHost = MutableStateFlow("")
     val activeHost: StateFlow<String> = _activeHost.asStateFlow()
+
+    private val _displays = MutableStateFlow<List<WardMessage.DisplayInfo>>(emptyList())
+    val displays: StateFlow<List<WardMessage.DisplayInfo>> = _displays.asStateFlow()
+
+    private val _activeDisplayId = MutableStateFlow(0)
+    val activeDisplayId: StateFlow<Int> = _activeDisplayId.asStateFlow()
 
     private var wardClient: WardClient? = null
     private var videoDecoder: VideoDecoder? = null
@@ -106,6 +112,11 @@ object WardSessionManager {
             onVideoFrame = { data, timestampNs, isKeyframe ->
                 videoDecoder?.feedFrame(data, timestampNs, isKeyframe)
             },
+            onDisplayList = { displayList ->
+                _displays.value = displayList.displays
+                _activeDisplayId.value = displayList.activeId
+                Log.i(TAG, "Updated available displays: ${displayList.displays.map { "${it.id}:${it.name}" }}, active=${displayList.activeId}")
+            },
             onSessionAccepted = { accepted ->
                 val updated = deviceStore.updateFromSession(accepted, host, port)
                 onDeviceUpdated?.invoke(updated)
@@ -137,6 +148,8 @@ object WardSessionManager {
 
         _connectionState.value = ConnectionState.Disconnected
         _fps.value = 0
+        _displays.value = emptyList()
+        _activeDisplayId.value = 0
         WardRemoteSessionService.stop(context.applicationContext)
     }
 
@@ -169,5 +182,11 @@ object WardSessionManager {
         _targetFps.value = fps
         wardClient?.sendInput(WardMessage.VideoConfig(width, height, 1, fps.toShort()))
         Log.i(TAG, "Requested stream configuration: ${width}x${height} @ ${fps} FPS")
+    }
+
+    fun selectDisplay(displayId: Int) {
+        _activeDisplayId.value = displayId
+        wardClient?.selectDisplay(displayId)
+        Log.i(TAG, "Requested display switch to ID $displayId")
     }
 }
